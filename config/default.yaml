@@ -1,0 +1,40 @@
+# Default configuration for LLM training workflow
+
+project_name: "horde-agent-run"
+language: "en"  # ISO 639-1 code
+
+data:
+  source: ""  # Required: path, url, or dataset name
+  size: 10000  # Optional: limit number of samples
+
+dataset:
+  split_ratio: 0.8  # train/val split
+  max_length: 2048  # max sequence length
+  
+train:
+  method: "sft"  # sft | grpo | dpo
+  model: "meta-llama/Llama-2-7b-hf"  # base model
+  epochs: 3
+  batch_size: 4
+  learning_rate: 0.0001
+  gradient_accumulation_steps: 4
+  # LoRA settings (optional)
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+
+eval:
+  metrics:
+    - "loss"
+    - "perplexity"
+  num_samples: 10  # for generation samples
+
+reporting:
+  reporters:
+    - "file"  # Always enabled
+    # - "wandb"  # Uncomment to enable
+    # - "tensorboard"
+  wandb:
+    entity: ""
+    project: "horde-agent"

@@ -1,0 +1,83 @@
+# Schema for workflow configuration validation
+
+required:
+  - project_name
+  - language
+  - data
+  - train
+
+properties:
+  project_name:
+    type: string
+    description: "Experiment name"
+  
+  language:
+    type: string
+    description: "Target language ISO 639-1 code (e.g., en, kk, ru)"
+  
+  data:
+    type: object
+    required:
+      - source
+    properties:
+      source:
+        type: string
+        description: "Data source: file path, HF dataset, or URL"
+      size:
+        type: integer
+        description: "Max number of samples to collect"
+  
+  dataset:
+    type: object
+    properties:
+      split_ratio:
+        type: float
+        default: 0.8
+      max_length:
+        type: integer
+        default: 2048
+  
+  train:
+    type: object
+    required:
+      - method
+      - model
+    properties:
+      method:
+        type: string
+        enum: [sft, grpo, dpo]
+      model:
+        type: string
+        description: "Base model identifier"
+      epochs:
+        type: integer
+        default: 3
+      batch_size:
+        type: integer
+        default: 4
+      learning_rate:
+        type: float
+        default: 0.0001
+      use_lora:
+        type: boolean
+        default: true
+      lora_r:
+        type: integer
+        default: 8
+      lora_alpha:
+        type: integer
+        default: 16
+  
+  eval:
+    type: object
+    properties:
+      metrics:
+        type: array
+        default: [loss, perplexity]
+  
+  reporting:
+    type: object
+    properties:
+      reporters:
+        type: array
+        default: [file]
