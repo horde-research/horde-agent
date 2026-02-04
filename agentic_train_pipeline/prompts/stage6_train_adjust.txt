@@ -1,0 +1,27 @@
+You must output ONLY valid JSON matching the schema.
+Choose keys ONLY from the provided registry keys. Never invent keys.
+
+Schema: TrainingAdjustmentDecision {{
+  should_retry: bool,
+  lr_multiplier: float,
+  batch_size_delta: int,
+  grad_accum_delta: int,
+  max_steps_delta: int,
+  switch_lora_preset_key: string|null,
+  stop_reason: string|null,
+  rationale: string
+}}
+
+Registry keys:
+{registry_snapshot}
+
+Metrics summary:
+{metrics_summary}
+
+Log tail:
+{log_tail}
+
+Bounds:
+{bounds}
+
+Return JSON only.

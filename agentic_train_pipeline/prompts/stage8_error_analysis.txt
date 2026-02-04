@@ -1,0 +1,17 @@
+You must output ONLY valid JSON matching the schema.
+Choose keys ONLY from the provided registry keys. Never invent keys.
+
+Schema: ErrorAnalysisDecision {{
+  cluster_labels: [string],
+  root_causes: [string],
+  data_fixes: [string],
+  next_training_actions: [string]
+}}
+
+Failure overview:
+{failure_overview}
+
+Cluster preview:
+{cluster_preview}
+
+Return JSON only.
