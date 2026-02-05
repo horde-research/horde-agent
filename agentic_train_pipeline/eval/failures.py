@@ -64,6 +64,5 @@ def collect_failures(predictions_path: str, out_dir: str) -> str:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
         for row in failures:
-            handle.write(str(json.dumps(row)) + "
-")
+            handle.write(str(json.dumps(row)) + "\n")
     return str(out_path)

@@ -14,6 +14,8 @@ def run_pipeline(
     max_iters: int,
     hf_model_id_override: Optional[str] = None,
     search_trials: int = 0,
+    max_samples: Optional[int] = None,
+    max_steps_override: Optional[int] = None,
 ) -> str:
     return run_langgraph_pipeline(
         data_path=data_path,
@@ -22,4 +24,6 @@ def run_pipeline(
         max_iters=max_iters,
         hf_model_id_override=hf_model_id_override,
         search_trials=search_trials,
+        max_samples=max_samples,
+        max_steps_override=max_steps_override,
     )

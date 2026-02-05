@@ -27,8 +27,7 @@ def _extract_text(response: Any) -> str:
                     if getattr(part, "type", None) == "output_text":
                         chunks.append(part.text)
         if chunks:
-            return "
-".join(chunks)
+            return "\n".join(chunks)
     return ""
 
 
@@ -63,7 +62,5 @@ class OpenAIJsonClient:
             except Exception:
                 if attempt >= OPENAI_MAX_RETRIES:
                     raise
-                user_prompt = user_prompt + "
-
-Return strict JSON only."
+                user_prompt = user_prompt + "\n\nReturn strict JSON only."
         raise RuntimeError("Failed to get JSON response")

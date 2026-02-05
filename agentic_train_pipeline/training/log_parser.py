@@ -26,8 +26,12 @@ def parse_metrics(metrics_path: str) -> MetricsSummary:
             record = json.loads(line)
             step = int(record.get("step", 0))
             last_step = max(last_step, step)
+            # Handle both "loss" and "train_loss" keys
             if "loss" in record:
                 last_train = float(record["loss"])
+            elif "train_loss" in record:
+                last_train = float(record["train_loss"])
+            # Handle eval loss
             if "eval_loss" in record:
                 last_eval = float(record["eval_loss"])
                 if best_eval is None or last_eval < best_eval:
@@ -47,5 +51,4 @@ def read_log_tail(log_path: str, max_lines: int = 25) -> str:
         return ""
     lines = path.read_text(encoding="utf-8").splitlines()
     tail = lines[-max_lines:]
-    return "
-".join(tail)
+    return "\n".join(tail)
