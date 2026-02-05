@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 import torch
 
-from agentic_train_pipeline.data.modality import extract_text_input_output
+from agentic_train_pipeline.parser.modality import extract_text_input_output
 
 
 def run_inference(
@@ -48,7 +48,6 @@ def run_inference(
 
     with out_path.open("w", encoding="utf-8") as handle:
         for row in results:
-            handle.write(str(json.dumps(row)) + "
-")
+            handle.write(str(json.dumps(row)) + "\n")
 
     return str(out_path)

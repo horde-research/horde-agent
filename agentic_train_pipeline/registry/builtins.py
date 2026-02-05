@@ -2,7 +2,7 @@
 
 from typing import Dict
 
-from agentic_train_pipeline.data.hf_dataset import (
+from agentic_train_pipeline.parser.hf_dataset import (
     load_hf_multimodal_dataset,
     load_hf_image_dataset,
     load_hf_text_dataset,

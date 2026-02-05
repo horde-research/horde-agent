@@ -10,7 +10,7 @@ from typing import Any, Dict
 import torch
 from transformers import DataCollatorForLanguageModeling, Trainer, TrainerCallback, TrainingArguments
 
-from agentic_train_pipeline.data.modality import format_text_for_sft
+from agentic_train_pipeline.parser.modality import format_text_for_sft
 from agentic_train_pipeline.types import TrainConfig
 
 
@@ -21,8 +21,7 @@ class JsonlMetricsCallback(TrainerCallback):
 
     def _write(self, logs: Dict[str, Any]) -> None:
         with open(self.metrics_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(logs) + "
-")
+            handle.write(json.dumps(logs) + "\n")
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs:

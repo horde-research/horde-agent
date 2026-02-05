@@ -29,8 +29,7 @@ class Agent:
     def _append_decision(self, stage: str, payload: Dict[str, Any]) -> None:
         record = {"stage": stage, "payload": payload}
         with self.decisions_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "
-")
+            handle.write(json.dumps(record) + "\n")
 
     def _validate_registry_keys(self, decision: ComponentSelectionDecision) -> bool:
         snapshot = self.registry_snapshot
@@ -69,9 +68,7 @@ class Agent:
                 "One or more keys are not in the registry. "
                 "Choose only from the registry keys provided."
             )
-            user_prompt = user_prompt + "
-
-" + correction
+            user_prompt = user_prompt + "\n\n" + correction
             payload = self.client.request_json(self.system_prompt, user_prompt)
             decision = ComponentSelectionDecision.model_validate(payload)
         self._append_decision("select_components", decision.model_dump())
@@ -94,9 +91,7 @@ class Agent:
                 "The lora preset key is invalid. "
                 "Choose only from the registry keys provided."
             )
-            user_prompt = user_prompt + "
-
-" + correction
+            user_prompt = user_prompt + "\n\n" + correction
             payload = self.client.request_json(self.system_prompt, user_prompt)
             decision = TrainingAdjustmentDecision.model_validate(payload)
         self._append_decision("suggest_training_adjustments", decision.model_dump())
