@@ -18,6 +18,7 @@ data/
 *.pth
 *.bin
 *.safetensors
+output/
 
 # Logs & Reports
 logs/
