@@ -13,15 +13,41 @@ LLM Training Agent for SFT/GRPO/DPO workflows.
 
 ## Quick Start
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+### Local Development (CPU)
 
-# Run workflow
-python scripts/run_workflow.py --input "Train SFT model on Kazakh language data"
+```bash
+# Create CPU virtual environment
+python -m venv venv-cpu
+source venv-cpu/bin/activate  # On Windows: venv-cpu\Scripts\activate
+
+# Install CPU-only dependencies
+pip install -r requirements-cpu.txt
+
+# Run pipeline
+python -m agentic_train_pipeline.main \
+  --data_path "your-dataset" \
+  --out_dir "./output/run1" \
+  --max_iters 3
 
 # Or use UI
 streamlit run ui/app.py
+```
+
+### Production (GPU)
+
+```bash
+# Create GPU virtual environment
+python -m venv venv-gpu
+source venv-gpu/bin/activate  # On Windows: venv-gpu\Scripts\activate
+
+# Install GPU dependencies
+pip install -r requirements.txt
+
+# Run pipeline
+python -m agentic_train_pipeline.main \
+  --data_path "your-dataset" \
+  --out_dir "./output/run1" \
+  --max_iters 3
 ```
 
 ## Supported Training Methods

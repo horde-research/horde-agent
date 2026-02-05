@@ -1,0 +1,27 @@
+# CPU-only requirements for local development (macOS/Linux without GPU)
+
+# Core
+pyyaml>=6.0
+pydantic>=2.0
+python-dotenv>=1.0.0
+
+# ML/Training (CPU-compatible versions)
+numpy<2.0  # Required for PyTorch 2.2.2 compatibility
+torch==2.2.2  # Latest available for macOS
+transformers>=4.30.0,<5.0  # Compatible with PyTorch 2.2.2
+datasets>=2.14.0
+accelerate>=0.20.0
+peft>=0.4.0
+fsspec<=2025.10.0  # Required by datasets
+
+# Reporting
+wandb>=0.15.0
+tensorboard>=2.13.0
+
+# UI
+streamlit>=1.28.0
+
+# LangGraph integration
+langgraph>=0.0.1
+openai>=1.0.0
+scikit-learn>=1.3.0

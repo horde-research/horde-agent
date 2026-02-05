@@ -5,7 +5,8 @@ __pycache__/
 *.so
 .Python
 env/
-venv/
+venv*/
+.venv*/
 *.egg-info/
 dist/
 build/
@@ -24,8 +25,10 @@ reports/
 wandb/
 mlruns/
 .tensorboard/
+*.log
+pipeline.log
 
-# Config
+# Config - Keep requirements files but not .env
 .env
 *.local.yaml
 
