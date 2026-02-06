@@ -24,7 +24,7 @@ source venv-cpu/bin/activate  # On Windows: venv-cpu\Scripts\activate
 pip install -r requirements-cpu.txt
 
 # Run pipeline
-python -m agentic_train_pipeline.main \
+python -m agent.main \
   --data_path "your-dataset" \
   --out_dir "./output/run1" \
   --max_iters 3
@@ -44,7 +44,7 @@ source venv-gpu/bin/activate  # On Windows: venv-gpu\Scripts\activate
 pip install -r requirements.txt
 
 # Run pipeline
-python -m agentic_train_pipeline.main \
+python -m agent.main \
   --data_path "your-dataset" \
   --out_dir "./output/run1" \
   --max_iters 3

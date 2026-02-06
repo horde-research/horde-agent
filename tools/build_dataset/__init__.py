@@ -1,5 +1,7 @@
-"""Dataset building tool."""
+"""Build-dataset package.
 
-from tools.build_dataset.tool import BuildDatasetTool
+Avoid importing tool classes at package import time to prevent circular imports.
+Import `BuildDatasetTool` from `tools.build_dataset.tool` when needed.
+"""
 
-__all__ = ['BuildDatasetTool']
+__all__ = []

@@ -1,5 +1,7 @@
-"""Model evaluation tool."""
+"""Evaluation package.
 
-from tools.eval_model.tool import EvalModelTool
+Avoid importing tool classes at package import time to prevent circular imports.
+Import `EvalModelTool` from `tools.eval_model.tool` when needed.
+"""
 
-__all__ = ['EvalModelTool']
+__all__ = []
