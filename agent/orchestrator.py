@@ -1,38 +1,30 @@
-"""
-Main agent orchestrator.
+"""Main agent orchestrator.
 
-Coordinates tool execution and manages workflow state.
-Handles both manual workflow mode and future agentic mode.
+This is the new orchestration entrypoint that runs the migrated tools.
 """
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from agent.workflow import WorkflowRunner
+from tools.build_dataset.tool import BuildDatasetTool
+from tools.eval_model.tool import EvalModelTool
+from tools.reporting.tool import ReportingTool
+from tools.train.tool import TrainTool
+
 
 class Orchestrator:
-    """
-    Main orchestrator for the agent.
-    
-    Responsibilities:
-    - Load and validate configuration
-    - Initialize tools
-    - Coordinate workflow execution
-    - Manage state persistence
-    - Handle errors and retries
-    
-    Future: Will integrate with LangGraph for agentic execution.
-    """
-    
-    def __init__(self, config):
-        """
-        Initialize orchestrator with configuration.
-        
-        Args:
-            config (dict): Validated workflow configuration
-        """
-        pass
-    
-    def run(self):
-        """
-        Execute the workflow.
-        
-        Returns:
-            dict: Execution results including model, metrics, report path
-        """
-        pass
+    def __init__(self, config: Dict[str, Any]) -> None:
+        self.config = config
+        run_dir = config.get("run_dir") or config.get("out_dir")
+        self.tools = {
+            "build_dataset": BuildDatasetTool(),
+            "train": TrainTool(),
+            "eval_model": EvalModelTool(),
+            "reporting": ReportingTool({"run_dir": run_dir}),
+        }
+
+    def run(self) -> Dict[str, Any]:
+        runner = WorkflowRunner(self.tools, self.config)
+        return runner.run()

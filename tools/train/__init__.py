@@ -1,5 +1,7 @@
-"""Training tool with SFT/GRPO/DPO support."""
+"""Training package.
 
-from tools.train.tool import TrainTool
+Avoid importing tool classes at package import time to prevent circular imports.
+Import `TrainTool` from `tools.train.tool` when needed.
+"""
 
-__all__ = ['TrainTool']
+__all__ = []

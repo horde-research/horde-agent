@@ -1,9 +1,0 @@
-You must output ONLY valid JSON matching the schema.
-Choose keys ONLY from the provided registry keys. Never invent keys.
-
-Schema: ModalityDecision {{ modality: "text"|"image"|"multimodal", confidence: float, rationale: string }}
-
-Dataset summary:
-{dataset_summary}
-
-Return JSON only.

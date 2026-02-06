@@ -23,12 +23,30 @@ def main():
     parser.add_argument('--resume', type=str, help='Resume from run_id')
     
     args = parser.parse_args()
-    
-    # Implementation goes here
-    # from workflows.manual_pipeline import run_manual_pipeline
-    # result = run_manual_pipeline(user_input)
-    
-    print("Workflow execution not yet implemented")
+
+    if not args.input and not args.config:
+        raise SystemExit("Provide either --input or --config")
+
+    # For now, support a minimal config-first entrypoint for the migrated pipeline.
+    # Natural language parsing remains a separate concern.
+    if args.config:
+        import yaml
+
+        with open(args.config, "r", encoding="utf-8") as handle:
+            cfg = yaml.safe_load(handle) or {}
+    else:
+        # Accept simple natural language as a stub: treat as dataset id/path.
+        cfg = {"data_path": args.input}
+
+    # Defaults
+    cfg.setdefault("mode", "workflow")
+    cfg.setdefault("run_dir", cfg.get("out_dir") or "./output/run1")
+    cfg.setdefault("max_iters", 1)
+
+    from agent.orchestrator import Orchestrator
+
+    result = Orchestrator(cfg).run()
+    print(result)
 
 if __name__ == '__main__':
     main()
