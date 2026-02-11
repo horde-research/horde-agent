@@ -19,5 +19,6 @@ streamlit>=1.28.0
 # Agent
 langgraph>=0.0.1
 openai>=1.0.0
+kazparserbot
 torch>=2.0.0
 scikit-learn>=1.3.0
