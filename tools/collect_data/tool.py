@@ -67,35 +67,60 @@ class CollectDataTool(BaseTool):
                 "Please ensure 'datasets' is installed (it should be in requirements)."
             )
 
-        keywords = config.get("keywords") or config.get("seed_keywords") or config.get("queries")
-        if not keywords or not isinstance(keywords, (list, tuple)) or not all(isinstance(k, str) for k in keywords):
-            raise ValueError("kazparserbot collection requires config['keywords'] as a list[str].")
+        cached_raw_path = config.get("raw_result_path") or config.get("cached_raw_path")
+        result: Any
+        run_dir: Path
+        raw_path: Path
 
-        run_dir = self._resolve_run_dir(config)
-        run_dir.mkdir(parents=True, exist_ok=True)
+        if cached_raw_path:
+            raw_path = Path(str(cached_raw_path))
+            if not raw_path.exists():
+                raise FileNotFoundError(f"raw_result_path not found: {raw_path}")
+            run_dir = Path(config.get("run_dir") or config.get("out_dir") or raw_path.parent)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            result = json.loads(raw_path.read_text(encoding="utf-8"))
+        else:
+            keywords = config.get("keywords") or config.get("seed_keywords") or config.get("queries")
+            if not keywords or not isinstance(keywords, (list, tuple)) or not all(isinstance(k, str) for k in keywords):
+                raise ValueError("kazparserbot collection requires config['keywords'] as a list[str].")
 
-        # Validate env early to fail fast with a clear error.
-        missing_env: List[str] = []
-        if not os.getenv("SERPER_API_KEY"):
-            missing_env.append("SERPER_API_KEY")
-        if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
-            missing_env.append("OPENAI_API_KEY")
-        if missing_env:
-            raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_env)}")
+            run_dir = self._resolve_run_dir(config)
+            run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Import lazily so the rest of the repo can run without this extra dependency.
-        from kazparserbot import KazParserBot  # type: ignore
+            # Validate env early to fail fast with a clear error.
+            missing_env: List[str] = []
+            if not os.getenv("SERPER_API_KEY"):
+                missing_env.append("SERPER_API_KEY")
+            if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
+                missing_env.append("OPENAI_API_KEY")
+            if missing_env:
+                raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_env)}")
 
-        options = dict(config.get("options") or {})
-        # Support both nested options and flat config keys.
-        for k in (
-            "google_results_to_get_per_query",
-            "top_results_to_get",
-            "queries_to_generate_per_keyword",
-            "collect_imgs_and_context",
-        ):
-            if k in config and k not in options:
-                options[k] = config[k]
+            # Import lazily so the rest of the repo can run without this extra dependency.
+            from kazparserbot import KazParserBot  # type: ignore
+
+            options = dict(config.get("options") or {})
+            # Support both nested options and flat config keys.
+            for k in (
+                "google_results_to_get_per_query",
+                "top_results_to_get",
+                "queries_to_generate_per_keyword",
+                "collect_imgs_and_context",
+            ):
+                if k in config and k not in options:
+                    options[k] = config[k]
+
+            bot = KazParserBot.from_env()
+
+            with _pushd(run_dir):
+                result = bot.scrape_keywords_sync(list(keywords), **options)
+
+            raw_path = run_dir / "kazparserbot_raw.json"
+            _write_json(raw_path, result)
+
+        imgs: List[Any] = []
+        if isinstance(result, dict):
+            imgs = list(result.get("__imgs__", []) or [])
 
         max_samples: Optional[int] = config.get("size")
         if max_samples is not None:
@@ -103,18 +128,6 @@ class CollectDataTool(BaseTool):
                 max_samples = int(max_samples)
             except Exception as e:
                 raise ValueError("config['size'] must be an int if provided.") from e
-
-        bot = KazParserBot.from_env()
-
-        with _pushd(run_dir):
-            result = bot.scrape_keywords_sync(list(keywords), **options)
-
-        raw_path = run_dir / "kazparserbot_raw.json"
-        _write_json(raw_path, result)
-
-        imgs: List[Any] = []
-        if isinstance(result, dict):
-            imgs = list(result.get("__imgs__", []) or [])
 
         samples = _extract_text_samples(result)
         if not samples:
@@ -206,17 +219,28 @@ def _extract_text_samples(obj: Any) -> List[str]:
                 if isinstance(v, (dict, list)):
                     walk(v)
                     continue
-                if isinstance(v, str) and k.lower() in {
-                    "text",
-                    "snippet",
-                    "content",
-                    "body",
-                    "title",
-                    "description",
-                    "context",
-                    "summary",
-                }:
-                    add_text(v)
+                if isinstance(v, str):
+                    key = k.lower()
+                    if "url" in key or "href" in key:
+                        continue
+                    if (
+                        key in {
+                            "text",
+                            "full_text",
+                            "snippet",
+                            "google_snippet",
+                            "content",
+                            "body",
+                            "title",
+                            "description",
+                            "context",
+                            "summary",
+                        }
+                        or key.endswith("text")
+                        or "snippet" in key
+                        or "content" in key
+                    ):
+                        add_text(v)
             return
 
     walk(obj)
