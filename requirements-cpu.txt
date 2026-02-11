@@ -24,4 +24,5 @@ streamlit>=1.28.0
 # LangGraph integration
 langgraph>=0.0.1
 openai>=1.0.0
+kazparserbot
 scikit-learn>=1.3.0
