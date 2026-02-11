@@ -14,7 +14,7 @@ project_root = Path(__file__).resolve().parent.parent.parent
 env_path = project_root / ".env"
 load_dotenv(env_path)
 
-OPENAI_API_KEY: str = os.getenv("OPENAI_KEY", "")
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL", None)
 OPENAI_TIMEOUT_S: int = int(os.getenv("OPENAI_TIMEOUT_S", "60"))
