@@ -1,0 +1,339 @@
+{
+  "country_or_culture": "Kazakhstan",
+  "timestamp": "2026-02-06T22:17:02.695647",
+  "early_stop_categories": 2,
+  "categories": [
+    {
+      "name": "Traditional Customs and Rituals",
+      "description": "Encompasses traditional Kazakh ceremonies, rituals, and celebrations, including wedding traditions (betashar, kyrk kuyu), childbirth customs (besikke salu), funeral rites (zheti nan), and other significant life-cycle events. Also includes nomadic traditions such as falconry (burkitshi), horseback riding competitions (kokpar, audaryspak), and related cultural practices. Focuses on the historical and contemporary practice and significance of these customs."
+    },
+    {
+      "name": "Social Structure and Family Life",
+      "description": "Covers Kazakh family structures (zhuz, ru), kinship systems, and the roles of elders (aksakals) and women. Includes family values, child-rearing practices, and intergenerational relationships. Examines social hierarchies, community organization (aul), and social etiquette (salamdastik). Includes modern changes to family structures and social norms due to urbanization and globalization."
+    }
+  ],
+  "category_subcategories": {
+    "Traditional Customs and Rituals": [
+      {
+        "name": "Wedding Traditions (Toi)",
+        "description": "Encompasses all customs and rituals associated with Kazakh weddings, from pre-wedding arrangements (kuda tusu, syrga salu) to the main wedding ceremony (toi) and post-wedding traditions (betashar, shashu). Includes regional variations, modern adaptations, and the roles of family members in each ritual. Covers aspects like gift-giving, music, dance, and food, and their symbolic meanings. Also includes the legal and religious aspects of marriage in Kazakhstan."
+      },
+      {
+        "name": "Childbirth and Early Childhood Customs",
+        "description": "Covers customs and rituals performed during pregnancy, childbirth, and early childhood in Kazakh culture. Includes practices like 'besikke salu' (placing the baby in the cradle), 'kyrkynan shygaru' (celebrating 40 days after birth), naming ceremonies, and other traditions aimed at ensuring the health and well-being of the child. Addresses regional differences and the influence of modern medicine on these traditions."
+      },
+      {
+        "name": "Funeral and Mourning Rites (Zheti Nan)",
+        "description": "Includes all customs and rituals associated with death, mourning, and remembrance of the deceased in Kazakh culture. Covers practices such as preparing the body for burial (janaza), funeral processions, memorial feasts ('zheti nan', 'kyrkyn', 'zhyl'), and other customs aimed at honoring the deceased and providing comfort to the bereaved family. Includes the role of religious leaders and the community in these rites, as well as regional variations in funeral practices."
+      },
+      {
+        "name": "Nomadic Traditions: Falconry (Burkitshi)",
+        "description": "Focuses on the traditional practice of falconry in Kazakhstan, including the training, hunting techniques, and cultural significance of birds of prey (primarily eagles). Covers the role of falconers (burkitshi), the equipment used (including specialized saddles and gloves), and the social status associated with falconry. Includes the transmission of knowledge from one generation to the next, and contemporary efforts to preserve and promote this tradition."
+      },
+      {
+        "name": "Nomadic Traditions: Equestrian Sports (Kokpar, Audaryspak)",
+        "description": "Covers traditional equestrian sports and games played in Kazakhstan, such as 'kokpar' (a game involving teams competing to score with a goat carcass) and 'audaryspak' (horseback wrestling). Includes the rules of the games, the skills required by the participants, the types of horses used, and the cultural significance of these sports. Also addresses the role of equestrian sports in promoting national identity and preserving nomadic heritage."
+      },
+      {
+        "name": "Coming-of-Age Rituals (Sunnet Toi)",
+        "description": "Details the rituals and ceremonies associated with the transition from childhood to adulthood in Kazakh culture, particularly the 'sunnet toi' (circumcision ceremony) for boys. Includes the preparations for the ceremony, the role of religious figures, the feasting and celebrations, and the symbolic meaning of the event. Also covers any equivalent or related rituals for girls, marking their entry into womanhood."
+      },
+      {
+        "name": "Hospitality Customs (Konakasy)",
+        "description": "Explores the traditional Kazakh customs of hospitality, including the welcoming of guests (konakasy), the offering of food and drink (shai, beshbarmak), and the etiquette expected of both hosts and guests. Covers the social importance of hospitality in Kazakh culture, the symbolic meanings of different gestures and offerings, and the role of hospitality in maintaining social harmony and strengthening relationships."
+      },
+      {
+        "name": "Blessing Rituals (Bata Beru)",
+        "description": "Covers the practice of giving blessings ('bata beru') in Kazakh culture, including the occasions when blessings are given (e.g., weddings, funerals, before journeys), the types of blessings offered (e.g., for health, prosperity, success), and the role of elders and religious figures in bestowing blessings. Includes the symbolic meanings of different gestures and words used in the blessing rituals, and their significance in ensuring good fortune and well-being."
+      }
+    ],
+    "Social Structure and Family Life": [
+      {
+        "name": "Zhuz and Ru Lineage",
+        "description": "This subcategory focuses on the traditional Kazakh tribal structure, specifically the three Zhuzes (Senior, Middle, and Junior) and their constituent Ru (clans). It includes the historical significance of Zhuz and Ru affiliation, inheritance customs related to lineage, traditional roles and responsibilities within the clan, and contemporary relevance of lineage in social identity, networking, and community relations. Data should include oral histories, genealogical records (shezhire), and modern manifestations of Zhuz/Ru identity."
+      },
+      {
+        "name": "Family Structure and Kinship (Otbası)",
+        "description": "This subcategory covers the structure of the Kazakh family, including the roles and relationships of family members (parents, children, grandparents, siblings, in-laws). It includes extended family networks, the concept of 'yeli' (community of relatives), kinship terminology, and the rules governing interactions within the family. Data should capture the dynamics of decision-making, resource allocation, and mutual support within the family unit, as well as variations based on region and socioeconomic status."
+      },
+      {
+        "name": "Role of Elders (Aksakals) and Respect for Seniors (Ulkenge құrmet)",
+        "description": "This subcategory examines the role of elders (aksakals) as respected figures within the family and community, focusing on their advisory role, conflict resolution functions, and transmission of cultural knowledge. It also includes the concept of 'Ulkenge құrmet' (respect for seniors), which is deeply ingrained in Kazakh culture. Data should include observations of elder-younger interactions, documented customary laws regarding elders' rights and responsibilities, and contemporary adaptations of these roles in modern Kazakh society."
+      },
+      {
+        "name": "Gender Roles and Women's Status",
+        "description": "This subcategory explores traditional and contemporary gender roles within Kazakh families and society. It encompasses women's roles in household management, childcare, economic activities, and community affairs. Data should capture the evolving status of women in Kazakhstan, including their participation in education, employment, politics, and leadership positions. It should also address issues related to gender equality, domestic violence, and cultural norms that impact women's lives."
+      },
+      {
+        "name": "Child-Rearing Practices (Tarbiye)",
+        "description": "This subcategory focuses on the methods and values involved in raising children in Kazakh families. It encompasses traditional practices such as 'besikke salu' (cradle ceremony), 'tusa kesu' (cutting of the first steps), and 'aty koyu' (naming ceremony). It also includes contemporary approaches to education, discipline, and socialization. Data should capture the transmission of cultural values, language, and traditions from one generation to the next, as well as the impact of urbanization and globalization on child-rearing practices."
+      },
+      {
+        "name": "Intergenerational Relationships",
+        "description": "This subcategory examines the relationships between different generations within Kazakh families, including grandparents, parents, children, and grandchildren. It focuses on the roles of grandparents in childcare and cultural transmission, the obligations of children to care for their elderly parents, and the dynamics of communication and conflict between generations. Data should capture the changing nature of intergenerational relationships in modern Kazakh society, including the impact of migration, urbanization, and access to technology."
+      },
+      {
+        "name": "Social Etiquette and Customs (Salt-Dastur)",
+        "description": "This subcategory covers the rules of etiquette, customs, and traditions that govern social interactions in Kazakhstan. It includes greetings (salamdastik), hospitality practices (konakasy), gift-giving customs (sıylyq beru), and protocols for attending social events (toi, as). Data should capture the nuances of Kazakh social etiquette, including the use of honorifics, body language, and verbal communication. It should also address regional variations and contemporary adaptations of these customs."
+      },
+      {
+        "name": "Community Organization (Aul and Neighborhood)",
+        "description": "This subcategory explores the structure and function of Kazakh communities, including traditional rural villages (aul) and modern urban neighborhoods. It focuses on community institutions such as mosques, schools, and community centers. It also encompasses social networks, mutual aid organizations, and collective activities such as 'asars' (community help). Data should capture the role of community in providing social support, maintaining cultural traditions, and promoting social cohesion. It should also address the challenges facing Kazakh communities in the context of urbanization and globalization."
+      },
+      {
+        "name": "Modernization and Changing Family Structures",
+        "description": "This subcategory examines the impact of urbanization, globalization, and socioeconomic changes on Kazakh family structures and social norms. It includes the rise of nuclear families, the increasing participation of women in the workforce, the impact of migration on family separation, and the adoption of new technologies and lifestyles. Data should capture the challenges and opportunities facing Kazakh families in the 21st century, including issues related to work-life balance, intergenerational conflict, and the preservation of cultural identity."
+      }
+    ]
+  },
+  "category_subcategory_keywords": {
+    "Traditional Customs and Rituals": {
+      "Wedding Traditions (Toi)": [
+        "Қазақ тойы",
+        "Kazakh wedding traditions",
+        "Қазақстан неке тойы",
+        "Kazakhstan wedding ceremony",
+        "Kuda tusu tradition Kazakhstan",
+        "Құда түсу қазақ",
+        "Syrga salu ritual",
+        "Сырға салу дәстүрі",
+        "Betashar custom Kazakhstan",
+        "Беташар салты",
+        "Kazakh wedding shashu",
+        "Шашу тойда"
+      ],
+      "Childbirth and Early Childhood Customs": [
+        "Қазақстандағы бала туу ғұрыптары",
+        "Қазақ балалар дәстүрлері",
+        "Бесікке салу дәстүрі",
+        "Қырқынан шығару",
+        "Kazakh childbirth traditions",
+        "Kazakh early childhood rituals",
+        "Besikke salu ceremony",
+        "Kyrkynan shygaru celebration",
+        "Қазақстандағы нәресте ғұрыптары",
+        "Kazakh baby naming ceremony",
+        "Қазақ балаларының салт-дәстүрлері",
+        "Kazakhstan child customs"
+      ],
+      "Funeral and Mourning Rites (Zheti Nan)": [
+        "Қазақ жерлеу рәсімдері",
+        "Kazakh funeral rites",
+        "Жаназа рәсімі",
+        "Janaza ceremony Kazakhstan",
+        "Қазақстан қаралы рәсімдер",
+        "Kazakhstan mourning rituals",
+        "Жеті нан беру",
+        "Zheti nan memorial feast",
+        "Қырқын беру дәстүрі",
+        "Kyrkyn tradition Kazakhstan",
+        "Жылдық ас беру",
+        "Kazakhstan Zhyl memorial feast"
+      ],
+      "Nomadic Traditions: Falconry (Burkitshi)": [
+        "Бүркітшілік",
+        "Қазақ бүркітшілігі",
+        "Falconry Kazakhstan",
+        "Eagle hunting Kazakhstan",
+        "Бүркіт аңы",
+        "Berkut hunting tradition",
+        "Қазақстан құсбегілігі",
+        "Kazakhstan falconry traditions",
+        " бүркітші дағдылары",
+        "Burkitshi training methods",
+        "Қыран бүркіт",
+        "Golden eagle hunting Kazakhstan"
+      ],
+      "Nomadic Traditions: Equestrian Sports (Kokpar, Audaryspak)": [
+        "Көкпар Қазақстан",
+        "Audaryspak Kazakhstan",
+        "Қазақстан көкпар ойыны",
+        "Kazakhstan kokpar game",
+        "Аударыспақ ережелері",
+        "Audaryspak rules",
+        "Қазақ жылқы спорты",
+        "Kazakh equestrian sports",
+        "Kokpar national sport",
+        "Көкпар ұлттық спорт",
+        "Kazakhstan nomadic games",
+        "Қазақстан көшпелі ойындары"
+      ],
+      "Coming-of-Age Rituals (Sunnet Toi)": [
+        "sunnet toi Kazakhstan",
+        "Қазақстанда сүндет тойы",
+        "circumcision ceremony Kazakhstan",
+        "қазақ ұл бала сүндет тойы",
+        "Kazakhstan boys circumcision ceremony",
+        "қыз бала дәстүрлері Қазақстан",
+        "Kazakh girls traditions Kazakhstan",
+        "Kazakh coming of age rituals",
+        "баланың ер жету рәсімдері",
+        "Kazakhstan initiation rites",
+        "сүндет тойы дәстүрлері",
+        "sunnet toi traditions"
+      ],
+      "Hospitality Customs (Konakasy)": [
+        "Қазақ қонақжайлылығы",
+        "Kazakh hospitality traditions",
+        "Қонақасы дәстүрі",
+        "Konakasy tradition Kazakhstan",
+        "Қазақ дастарханы",
+        "Kazakh dastarkhan traditions",
+        "Kazakhstan guest etiquette",
+        "Қазақ қонақ күту",
+        "Kazakh traditional hospitality",
+        "Beshbarmak hospitality ritual",
+        "Қазақ шай рәсімі",
+        "Kazakh tea ceremony traditions"
+      ],
+      "Blessing Rituals (Bata Beru)": [
+        "Бата беру",
+        "Kazakh blessing ritual",
+        "Қазақ бата беру",
+        "Bata beru traditions Kazakhstan",
+        "Blessing customs Kazakhstan",
+        "Қазақстан бата ғұрпы",
+        "Kazakhstan blessing traditions",
+        "Бата беру рәсімі",
+        "Kazakh wedding blessing",
+        "Қазақ той батасы",
+        "Blessing before journey Kazakhstan",
+        "Сапар алдында бата беру"
+      ]
+    },
+    "Social Structure and Family Life": {
+      "Zhuz and Ru Lineage": [
+        "Қазақ жүздері",
+        "Kazakh Zhuzes",
+        "Үлкен Жүз",
+        "Орта Жүз",
+        "Кіші Жүз",
+        "Senior Zhuz",
+        "Middle Zhuz",
+        "Junior Zhuz",
+        "қазақ рулары",
+        "Kazakh clans",
+        "шежіре",
+        "shezhire genealogy",
+        "Ru lineage Kazakhstan",
+        "қазақ рулық құрылымы",
+        "Kazakh tribal structure",
+        "Zhuz and Ru social identity",
+        "Қазақстандағы рулық байланыстар",
+        "lineage inheritance customs Kazakhstan"
+      ],
+      "Family Structure and Kinship (Otbası)": [
+        "Қазақ отбасы құрылымы",
+        "Kazakh family structure",
+        "Kazakhstan kinship system",
+        "Отбасылық қатынастар Қазақстан",
+        "Family relations Kazakhstan",
+        "Қазақ дәстүрлі отбасы",
+        "Kazakh traditional family",
+        "Қазақстан рулық жүйе",
+        "Kazakhstan clan system",
+        "Yeli Kazakhstan kinship",
+        "Қазақ отбасы мүшелері",
+        "Kazakh family members roles"
+      ],
+      "Role of Elders (Aksakals) and Respect for Seniors (Ulkenge құrmet)": [
+        "Ақсақалдар институты",
+        "Қазақстандағы қариялар",
+        "үлкенді сыйлау дәстүрі",
+        "Kazakhstan elders role",
+        "Aksakal council Kazakhstan",
+        "Respect for seniors Kazakh culture",
+        "Қазақ әдет-ғұрыптары үлкендер туралы",
+        "Kazakh customary law elders",
+        "Ulkenge құrmet traditions",
+        "Қазақстан қарттарының рөлі",
+        "Kazakhstan senior citizens",
+        "Aksakals conflict resolution"
+      ],
+      "Gender Roles and Women's Status": [],
+      "Child-Rearing Practices (Tarbiye)": [
+        "Қазақстанда бала тәрбиесі",
+        "Kazakhstan child-rearing practices",
+        "бала тәрбиесі дәстүрлері",
+        "traditional Kazakh parenting",
+        "besikke salu ceremony",
+        "бесікке салу дәстүрі",
+        "tusa kesu tradition Kazakhstan",
+        "тұсау кесу қазақстан",
+        "aty koyu Kazakhstan",
+        "ат қою дәстүрі",
+        "Kazakh family values child",
+        "қазақ отбасы құндылықтары бала тәрбиесі"
+      ],
+      "Intergenerational Relationships": [
+        "Қазақ отбасы ұрпақтар арасы қарым-қатынасы",
+        "Kazakh family intergenerational relationships",
+        "Әжелер мен немерелер Қазақстан",
+        "Grandparents and grandchildren Kazakhstan",
+        "Ата-аналар мен балалар Қазақстан",
+        "Parents and children Kazakhstan",
+        "Қазақстан отбасындағы үлкендерді күту",
+        "Caring for elderly parents in Kazakhstan",
+        "Intergenerational communication Kazakh culture",
+        "Ұрпақтар арасындағы байланыс Қазақстан",
+        "Kazakhstan поколение отношения",
+        "Kazakhstan intergenerational support"
+      ],
+      "Social Etiquette and Customs (Salt-Dastur)": [
+        "Қазақ салт-дәстүрлері",
+        "Kazakh social etiquette",
+        "Қазақ әдебі",
+        "Kazakhstan customs and traditions",
+        "Саламалдық дәстүрі",
+        "Salamdastyk greeting tradition",
+        "Қонақасы қазақ",
+        "Kazakh hospitality Konakasy",
+        "Сыйлық беру әдебі",
+        "Gift-giving customs Kazakhstan",
+        "Қазақ тойының әдебі",
+        "Kazakh wedding etiquette Toi"
+      ],
+      "Community Organization (Aul and Neighborhood)": [
+        "Қазақ ауылы",
+        "Kazakh aul",
+        "Kazakh village life",
+        "Қазақстан махаллесі",
+        "Kazakhstan neighborhood",
+        "казахская община",
+        "Kazakh community organization",
+        "Asar Kazakhstan",
+        "Асар Қазақстан",
+        "Kazakh mutual aid",
+        "Қазақстан мешіттері",
+        "Kazakhstan mosques",
+        "қазақ ауылдарының әлеуметтік құрылымы",
+        "Social structure of Kazakh villages",
+        "Kazakhstan community centers",
+        "Қазақстан қоғамдық орталықтары",
+        "Urban Kazakh communities",
+        "Қалалық қазақ қауымдастықтары",
+        "Kazakhstan neighborhood social networks",
+        "Қазақстан махаллелерінің әлеуметтік желілері"
+      ],
+      "Modernization and Changing Family Structures": [
+        "Қазақстандағы отбасының өзгеруі",
+        "Kazakhstan family structure changes",
+        "Қазақ отбасыларының модернизациясы",
+        "Modernization of Kazakh families",
+        "Қазақстандағы жұмыс пен отбасылық тепе-теңдік",
+        "Kazakhstan work-life balance",
+        "қазақ әйелдерінің жұмыспен қамтылуы",
+        "Kazakh women in the workforce",
+        "Migration and Kazakh families",
+        "Көші-қон және қазақ отбасылары",
+        "Kazakhstan intergenerational conflict",
+        "Қазақстандағы ұрпақтар арасындағы қақтығыс"
+      ]
+    }
+  },
+  "stats": {
+    "num_categories": 2,
+    "num_subcategories": 17,
+    "num_keywords": 206
+  }
+}
