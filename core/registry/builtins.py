@@ -46,7 +46,7 @@ LORA_PRESETS: Dict[str, Dict[str, object]] = {
 }
 
 # Kept identical to current behavior (may be overridden by CLI/config).
-DEFAULT_HF_MODEL_ID = "gpt4o-mini"
+DEFAULT_HF_MODEL_ID = "Qwen/Qwen2.5-1.5B"
 
 
 def build_registry() -> Registry:

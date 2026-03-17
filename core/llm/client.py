@@ -210,17 +210,23 @@ class LLMClient:
     def from_env(cls, **overrides) -> "LLMClient":
         """Create a client from environment variables.
 
-        Env vars:
-            LLM_PROVIDER  – openai | gemini | xai  (default: gemini)
-            LLM_MODEL     – model name              (default: gemini-2.5-flash)
-            LLM_API_KEY   – API key                 (required)
+        Env vars (checked in order):
+            LLM_PROVIDER   – openai | gemini | xai  (default: gemini)
+            LLM_MODEL      – model name              (default: gemini-2.5-flash)
+            LLM_API_KEY    – API key                 (required)
+            OPENAI_API_KEY – fallback if LLM_API_KEY is not set
         """
         provider = overrides.get("provider") or os.getenv("LLM_PROVIDER", "gemini")
         model = overrides.get("model") or os.getenv("LLM_MODEL", "gemini-2.5-flash")
-        api_key = overrides.get("api_key") or os.getenv("LLM_API_KEY", "")
+        api_key = (
+            overrides.get("api_key")
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
+        )
         if not api_key:
             raise ValueError(
-                "LLM_API_KEY environment variable is not set. "
+                "LLM_API_KEY (or OPENAI_API_KEY) environment variable is not set. "
                 "Set it in .env or pass api_key= explicitly."
             )
         return cls(
