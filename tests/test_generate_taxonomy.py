@@ -28,7 +28,8 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=project_root / ".env")
 
-from shared.logging_config import setup_logging
+def setup_logging():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 from tools.generate_taxonomy.tool import GenerateTaxonomyTool
 
 # ─── Configuration ────────────────────────────────────────────────────────────

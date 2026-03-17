@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.agentic.agent import Agent
-from core.agentic.config import DEFAULT_SEED
+from core.agentic.agent import DEFAULT_SEED
 from core.registry.builtins import build_registry
 from core.types.pipeline_types import TrainConfig
 from tools.build_dataset.tool import BuildDatasetTool
