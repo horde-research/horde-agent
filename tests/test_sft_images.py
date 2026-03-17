@@ -24,7 +24,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from shared.logging_config import setup_logging
+def setup_logging():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 from tools.build_sft_dataset.tool import BuildSftDatasetTool
 
 # ─── Configuration ────────────────────────────────────────────────────────────
