@@ -1,8 +1,10 @@
 """Workflow execution engine.
 
-Runs the workflow as a sequence of tool calls in two modes:
-- `workflow`: fixed steps, no LLM decisions
-- `minimal_agentic`: current agentic pipeline behavior (component selection + iterative adjustments)
+Runs the workflow as a sequence of tool calls in three modes:
+
+- ``full``: country/culture input -> taxonomy -> collect -> sft -> train -> eval -> report
+- ``workflow``: start from an existing dataset path -> build -> train -> eval -> report
+- ``minimal_agentic``: LLM-driven component selection + iterative adjustments
 """
 
 from __future__ import annotations
@@ -16,7 +18,10 @@ from core.agentic.config import DEFAULT_SEED
 from core.registry.builtins import build_registry
 from core.types.pipeline_types import TrainConfig
 from tools.build_dataset.tool import BuildDatasetTool
+from tools.build_sft_dataset.tool import BuildSftDatasetTool
+from tools.collect_data.tool import CollectDataTool
 from tools.eval_model.tool import EvalModelTool
+from tools.generate_taxonomy.tool import GenerateTaxonomyTool
 from tools.reporting.tool import ReportingTool
 from tools.train.tool import TrainTool
 from tools.train.training.log_parser import read_log_tail
@@ -34,11 +39,105 @@ class WorkflowRunner:
 
     def run(self) -> Dict[str, Any]:
         mode = (self.config.get("mode") or "workflow").lower()
+        if mode == "full":
+            return self._run_full_pipeline()
         if mode == "workflow":
             return self._run_workflow()
         if mode in {"minimal_agentic", "agentic"}:
             return self._run_minimal_agentic()
         raise ValueError(f"Unknown mode: {mode}")
+
+    # ── full pipeline: country → taxonomy → collect → sft → train → eval → report
+
+    def _run_full_pipeline(self) -> Dict[str, Any]:
+        run_dir = self._require("run_dir")
+        country = self._require("country")
+
+        generate_taxonomy: GenerateTaxonomyTool = self.tools["generate_taxonomy"]
+        collect_data: CollectDataTool = self.tools["collect_data"]
+        build_sft: BuildSftDatasetTool = self.tools["build_sft_dataset"]
+        build_dataset: BuildDatasetTool = self.tools["build_dataset"]
+        train: TrainTool = self.tools["train"]
+        eval_model: EvalModelTool = self.tools["eval_model"]
+        reporting: ReportingTool = self.tools["reporting"]
+
+        # Step 1 — Generate taxonomy (categories → subcategories → keywords)
+        logger.info("Step 1/7: Generating taxonomy for '%s'...", country)
+        taxonomy_config = {
+            k: self.config[k]
+            for k in ("provider", "model", "api_key", "batch_size", "batch_delay")
+            if k in self.config
+        }
+        taxonomy_out = generate_taxonomy.execute(country, taxonomy_config or None)
+
+        all_keywords: List[str] = []
+        for sub_dict in taxonomy_out["category_subcategory_keywords"].values():
+            for kw_list in sub_dict.values():
+                all_keywords.extend(kw_list)
+        if not all_keywords:
+            raise RuntimeError("Taxonomy generation produced zero keywords.")
+        logger.info("Taxonomy produced %d keywords.", len(all_keywords))
+
+        # Step 2 — Collect data from the internet using keywords
+        logger.info("Step 2/7: Collecting data with %d keywords...", len(all_keywords))
+        collect_dir = str(Path(run_dir) / "collect")
+        collect_out = collect_data.execute({
+            "keywords": all_keywords,
+            "run_dir": collect_dir,
+            **(self.config.get("collect_data") or {}),
+        })
+        raw_data_path = collect_out["data_path"]
+        logger.info("Collected %d samples -> %s", collect_out["num_samples"], raw_data_path)
+
+        # Step 3 — Build SFT dataset from collected text
+        # CollectDataTool saves HF Dataset on disk; export to JSONL for the SFT builder.
+        logger.info("Step 3/7: Building SFT dataset from collected text...")
+        sft_dir = Path(run_dir) / "sft"
+        sft_dir.mkdir(parents=True, exist_ok=True)
+        collected_jsonl = str(sft_dir / "collected_texts.jsonl")
+        self._export_hf_dataset_to_jsonl(raw_data_path, collected_jsonl)
+
+        sft_out = build_sft.execute({
+            "mode": "text",
+            "input_jsonl": collected_jsonl,
+            "text_field": "text",
+            "output_annotations": str(sft_dir / "annotations.jsonl"),
+            "output_sft": str(sft_dir / "sft.jsonl"),
+            **(self.config.get("build_sft") or {}),
+        })
+        sft_path = sft_out["sft_path"]
+        logger.info("Built %d SFT examples -> %s", sft_out["num_examples"], sft_path)
+
+        # Step 4 — Load SFT JSONL as HF dataset
+        logger.info("Step 4/7: Loading SFT dataset for training...")
+        dataset_out = build_dataset.execute(sft_path, {"run_dir": run_dir})
+
+        # Steps 5-7 — Train, evaluate, report (shared with workflow mode)
+        return self._train_eval_report(
+            run_dir=run_dir,
+            dataset_out=dataset_out,
+            train=train,
+            eval_model=eval_model,
+            reporting=reporting,
+            extra_report_data={
+                "taxonomy": {
+                    "country": country,
+                    "num_categories": len(taxonomy_out["categories"]),
+                    "num_keywords": len(all_keywords),
+                },
+                "collection": {
+                    "num_samples": collect_out["num_samples"],
+                    "raw_data_path": raw_data_path,
+                },
+                "sft_generation": {
+                    "num_examples": sft_out["num_examples"],
+                    "num_failures": sft_out["num_failures"],
+                },
+            },
+            mode_name="full",
+        )
+
+    # ── workflow mode: start from data_path ─────────────────────────────────
 
     def _run_workflow(self) -> Dict[str, Any]:
         run_dir = self._require("run_dir")
@@ -54,9 +153,33 @@ class WorkflowRunner:
             {"run_dir": run_dir, **(self.config.get("build_dataset") or {})},
         )
 
+        return self._train_eval_report(
+            run_dir=run_dir,
+            dataset_out=dataset_out,
+            train=train,
+            eval_model=eval_model,
+            reporting=reporting,
+            extra_report_data={},
+            mode_name="workflow",
+        )
+
+    # ── shared train → eval → report ───────────────────────────────────────
+
+    def _train_eval_report(
+        self,
+        *,
+        run_dir: str,
+        dataset_out: Dict[str, Any],
+        train: TrainTool,
+        eval_model: EvalModelTool,
+        reporting: ReportingTool,
+        extra_report_data: Dict[str, Any],
+        mode_name: str,
+    ) -> Dict[str, Any]:
         hf_model_id = self.config.get("hf_model_id") or self.config.get("model")
         if not hf_model_id:
-            raise ValueError("workflow mode requires config['hf_model_id'] (or legacy 'model').")
+            from core.registry.builtins import DEFAULT_HF_MODEL_ID
+            hf_model_id = DEFAULT_HF_MODEL_ID
 
         trainer_key = self.config.get("trainer_key", "static_sft_default")
         lora_preset_key = self.config.get("lora_preset_key", "lora_attn_small")
@@ -70,10 +193,13 @@ class WorkflowRunner:
         if isinstance(self.config.get("train_config"), dict):
             train_config = train_config.model_copy(update=self.config["train_config"])
 
+        data_path = dataset_out["dataset_ref"]["data_path"]
+
         iterations: List[Dict[str, Any]] = []
         last_adapter_path: Optional[str] = None
 
         for iter_idx in range(max_iters):
+            logger.info("Training iteration %d/%d...", iter_idx + 1, max_iters)
             train_out = train.execute(
                 dataset_out["dataset_ref"],
                 {
@@ -94,6 +220,7 @@ class WorkflowRunner:
         if not last_adapter_path:
             raise RuntimeError("No adapter produced by training.")
 
+        logger.info("Evaluating model...")
         eval_out = eval_model.execute(
             last_adapter_path,
             data_path,
@@ -106,6 +233,7 @@ class WorkflowRunner:
             },
         )
 
+        logger.info("Generating report...")
         report_path = reporting.finalize(
             {
                 "dataset_summary": dataset_out["dataset_summary"],
@@ -116,24 +244,27 @@ class WorkflowRunner:
                     "trainer_key": trainer_key,
                     "hf_model_id": hf_model_id,
                     "primary_metric": "eval_loss",
-                    "rationale": "workflow mode selection",
+                    "rationale": f"{mode_name} mode selection",
                 },
                 "iterations": iterations,
                 "failures_path": eval_out["failures_path"],
                 "cluster_preview": eval_out["cluster_preview"],
-                "error_analysis": {},
+                "error_analysis": extra_report_data,
             }
         )
 
         return {
-            "mode": "workflow",
+            "mode": mode_name,
             "run_dir": run_dir,
             "adapter_path": last_adapter_path,
             "predictions_path": eval_out["predictions_path"],
             "failures_path": eval_out["failures_path"],
             "cluster_preview": eval_out["cluster_preview"],
             "report_path": report_path,
+            **extra_report_data,
         }
+
+    # ── minimal_agentic mode ────────────────────────────────────────────────
 
     def _run_minimal_agentic(self) -> Dict[str, Any]:
         run_dir = self._require("run_dir")
@@ -174,7 +305,6 @@ class WorkflowRunner:
 
         bounds = TuningBounds()
 
-        # Optional random search (delegating to TrainTool using isolated trial dirs)
         search_trials = int(self.config.get("search_trials", 0) or 0)
         if search_trials > 0:
             best_config = train_config
@@ -288,6 +418,17 @@ class WorkflowRunner:
             "error_analysis": error_analysis,
             "report_path": report_path,
         }
+
+    @staticmethod
+    def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
+        """Convert a HF save_to_disk dataset to JSONL for downstream tools."""
+        import json
+        from datasets import load_from_disk
+
+        ds = load_from_disk(hf_dataset_path)
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for row in ds:
+                f.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
 
     def _require(self, key: str) -> Any:
         value = self.config.get(key)
