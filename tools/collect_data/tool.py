@@ -91,8 +91,8 @@ class CollectDataTool(BaseTool):
             missing_env: List[str] = []
             if not os.getenv("SERPER_API_KEY"):
                 missing_env.append("SERPER_API_KEY")
-            if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
-                missing_env.append("OPENAI_API_KEY")
+            if not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
+                missing_env.append("LLM_API_KEY")
             if missing_env:
                 raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_env)}")
 
