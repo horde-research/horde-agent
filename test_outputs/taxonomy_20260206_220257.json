@@ -1,0 +1,28 @@
+{
+  "country_or_culture": "Kazakhstan",
+  "timestamp": "2026-02-06T22:02:57.037816",
+  "early_stop_categories": 2,
+  "categories": [
+    {
+      "name": "Traditional Customs and Rituals (Salt dästür)",
+      "description": "This category encompasses traditional Kazakh ceremonies, rituals, and celebrations, including those related to birth (besikke salu), marriage (kız uzatu), death (zholtau), and seasonal events like Nauryz. It also includes traditional games (kokpar, kyz kuu), ancestral veneration practices, and shamanistic beliefs that persist or influence contemporary practices. Documentation should include the significance, performance, and variations of these customs across different regions and communities."
+    },
+    {
+      "name": "Social Structure and Kinship (Äulettik qurylym)",
+      "description": "This category examines the traditional social hierarchy, kinship system (especially the 'zhuz' system), and community organization in Kazakhstan. It includes family structures, roles, and relationships, as well as social etiquette, customs of respect (izetter), and intergenerational dynamics. It also covers the influence of traditional social structures on modern Kazakh society, including tribal affiliations and their impact on social and political life."
+    }
+  ],
+  "category_subcategories": {
+    "Traditional Customs and Rituals (Salt dästür)": [],
+    "Social Structure and Kinship (Äulettik qurylym)": []
+  },
+  "category_subcategory_keywords": {
+    "Traditional Customs and Rituals (Salt dästür)": {},
+    "Social Structure and Kinship (Äulettik qurylym)": {}
+  },
+  "stats": {
+    "num_categories": 2,
+    "num_subcategories": 0,
+    "num_keywords": 0
+  }
+}

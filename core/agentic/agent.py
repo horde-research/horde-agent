@@ -1,6 +1,7 @@
 """High-level agent wrapper for pipeline decisions.
 
-Copied from `agentic_train_pipeline/agent/agent.py` and adjusted for new package layout.
+Uses the unified LLMClient from core.llm for all LLM calls.
+Only used by the ``minimal_agentic`` workflow mode.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from core.agentic.client import OpenAIJsonClient
+from core.llm import LLMClient, LLMRequest
 from core.agentic.loader import load_prompt
 from core.agentic.schemas import (
     ComponentSelectionDecision,
@@ -19,10 +20,12 @@ from core.agentic.schemas import (
 )
 from core.registry.registry import RegistrySnapshot
 
+DEFAULT_SEED: int = 42
+
 
 class Agent:
     def __init__(self, out_dir: str, registry_snapshot: RegistrySnapshot) -> None:
-        self.client = OpenAIJsonClient()
+        self.client = LLMClient.from_env()
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.registry_snapshot = registry_snapshot
@@ -32,7 +35,19 @@ class Agent:
     def _append_decision(self, stage: str, payload: Dict[str, Any]) -> None:
         record = {"stage": stage, "payload": payload}
         with self.decisions_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _request_json(self, user_prompt: str) -> Dict[str, Any]:
+        """Send a single LLM request and return parsed JSON dict."""
+        req = LLMRequest(
+            request_id="agent_decision",
+            system_prompt=self.system_prompt,
+            user_message=user_prompt,
+        )
+        resp = self.client.generate_json_sync(req)
+        if not resp.success:
+            raise RuntimeError(f"Agent LLM call failed: {resp.error}")
+        return resp.data
 
     def _validate_registry_keys(self, decision: ComponentSelectionDecision) -> bool:
         snapshot = self.registry_snapshot
@@ -50,9 +65,9 @@ class Agent:
 
     def decide_modality(self, dataset_summary: Dict[str, Any]) -> ModalityDecision:
         user_prompt = load_prompt(
-            "stage1_modality.txt", dataset_summary=json.dumps(dataset_summary, indent=2)
+            "stage1_modality.txt", dataset_summary=json.dumps(dataset_summary, indent=2, ensure_ascii=False)
         )
-        payload = self.client.request_json(self.system_prompt, user_prompt)
+        payload = self._request_json(user_prompt)
         decision = ModalityDecision.model_validate(payload)
         self._append_decision("decide_modality", decision.model_dump())
         return decision
@@ -60,19 +75,18 @@ class Agent:
     def select_components(self, dataset_summary: Dict[str, Any], modality: str) -> ComponentSelectionDecision:
         user_prompt = load_prompt(
             "stage2_components.txt",
-            dataset_summary=json.dumps(dataset_summary, indent=2),
+            dataset_summary=json.dumps(dataset_summary, indent=2, ensure_ascii=False),
             modality=modality,
-            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2),
+            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2, ensure_ascii=False),
         )
-        payload = self.client.request_json(self.system_prompt, user_prompt)
+        payload = self._request_json(user_prompt)
         decision = ComponentSelectionDecision.model_validate(payload)
         if not self._validate_registry_keys(decision):
-            correction = (
-                "One or more keys are not in the registry. "
+            user_prompt += (
+                "\n\nOne or more keys are not in the registry. "
                 "Choose only from the registry keys provided."
             )
-            user_prompt = user_prompt + "\n\n" + correction
-            payload = self.client.request_json(self.system_prompt, user_prompt)
+            payload = self._request_json(user_prompt)
             decision = ComponentSelectionDecision.model_validate(payload)
         self._append_decision("select_components", decision.model_dump())
         return decision
@@ -82,20 +96,19 @@ class Agent:
     ) -> TrainingAdjustmentDecision:
         user_prompt = load_prompt(
             "stage6_train_adjust.txt",
-            metrics_summary=json.dumps(metrics_summary, indent=2),
+            metrics_summary=json.dumps(metrics_summary, indent=2, ensure_ascii=False),
             log_tail=log_tail,
-            bounds=json.dumps(bounds, indent=2),
-            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2),
+            bounds=json.dumps(bounds, indent=2, ensure_ascii=False),
+            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2, ensure_ascii=False),
         )
-        payload = self.client.request_json(self.system_prompt, user_prompt)
+        payload = self._request_json(user_prompt)
         decision = TrainingAdjustmentDecision.model_validate(payload)
         if not self._validate_adjustment_keys(decision):
-            correction = (
-                "The lora preset key is invalid. "
+            user_prompt += (
+                "\n\nThe lora preset key is invalid. "
                 "Choose only from the registry keys provided."
             )
-            user_prompt = user_prompt + "\n\n" + correction
-            payload = self.client.request_json(self.system_prompt, user_prompt)
+            payload = self._request_json(user_prompt)
             decision = TrainingAdjustmentDecision.model_validate(payload)
         self._append_decision("suggest_training_adjustments", decision.model_dump())
         return decision
@@ -105,11 +118,10 @@ class Agent:
     ) -> ErrorAnalysisDecision:
         user_prompt = load_prompt(
             "stage8_error_analysis.txt",
-            failure_overview=json.dumps(failure_overview, indent=2),
-            cluster_preview=json.dumps(cluster_preview, indent=2),
+            failure_overview=json.dumps(failure_overview, indent=2, ensure_ascii=False),
+            cluster_preview=json.dumps(cluster_preview, indent=2, ensure_ascii=False),
         )
-        payload = self.client.request_json(self.system_prompt, user_prompt)
+        payload = self._request_json(user_prompt)
         decision = ErrorAnalysisDecision.model_validate(payload)
         self._append_decision("analyze_errors", decision.model_dump())
         return decision
-

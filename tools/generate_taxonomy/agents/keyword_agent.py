@@ -1,4 +1,4 @@
-"""Agent for generating search keywords — supports batched execution."""
+"""Agent for generating search queries — supports batched execution."""
 
 import logging
 from typing import Dict, List
@@ -8,57 +8,43 @@ from core.llm import LLMClient, LLMRequest
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an expert at creating effective search keywords for internet search engines (Google, Bing, etc.) and data collection.
+SYSTEM_PROMPT = """You are an expert at creating effective Google search queries for web data collection.
 
-Your task is to generate specific, searchable keywords that would return relevant data (images, text, etc.) for a given subcategory within a cultural context.
+Your task is to generate specific, ready-to-search Google queries that would return relevant pages (articles, encyclopedias, news) for a given subcategory within a cultural context.
 
 Output a JSON object with the following structure:
 {
-    "keywords": [
-        "search keyword phrase 1",
-        "search keyword phrase 2",
-        "search keyword phrase 3"
+    "search_queries": [
+        "full search query phrase 1",
+        "full search query phrase 2",
+        "full search query phrase 3"
     ]
 }
 
-Guidelines for creating effective keywords:
+Guidelines for creating effective search queries:
 
-1. **Search Engine Optimization**:
-   - Use 2-5 word phrases that people actually search for
-   - Include the country/culture name when relevant
-   - Use specific, descriptive terms
-   - Think about what would return the best results on Google Images or web search
+1. **Google-Ready Queries**:
+   - Write complete phrases you would type into Google (5-15 words)
+   - Include the country/culture name in every query
+   - Be specific: prefer "traditional Kazakh beshbarmak recipe preparation" over "beshbarmak"
+   - Mix informational queries ("What is ...", "History of ...") with factual ones
 
-2. **Multilingual Keywords (REQUIRED)**:
-   - **ALWAYS generate keywords in BOTH native language(s) AND English**
-   - For each country/culture, include keywords in:
-     * Native language(s) of the country (e.g., for Kazakhstan: Kazakh language using Cyrillic script like "Қазақстан дәстүрлі", "қазақ киімі")
-     * English translations and descriptions (e.g., "Kazakhstan traditional", "Kazakh culture")
-   - If the country has multiple official languages, include keywords in all major languages
-   - Use native script (Cyrillic, Arabic, Latin, etc.) as appropriate for the country
-   - Include transliterations when helpful (e.g., "qazaq kiyimi" for Kazakh)
-   - Create mixed-language combinations (native term + English descriptor)
-   - Balance: approximately 40-50% native language, 40-50% English, 10-20% mixed
+2. **Multilingual Queries (REQUIRED)**:
+   - Generate queries in BOTH native language(s) AND English
+   - For Kazakhstan: include Kazakh (Cyrillic) and English queries
+   - Use native script where appropriate (e.g., "Қазақстанның дәстүрлі тағамдары")
+   - Balance: approximately 50% native language, 50% English
 
-3. **Cultural Context**:
-   - Include cultural identifiers (country name, ethnic group, etc.)
-   - Use culturally appropriate terminology
-   - Consider regional variations
-   - Include both traditional and modern terms
+3. **Coverage and Variety**:
+   - Cover different aspects: history, traditions, modern practices, notable examples
+   - Include both broad overviews and specific deep-dives
+   - Consider different source types: Wikipedia-style, news, academic, cultural guides
 
-4. **Variety and Coverage**:
-   - Generate diverse keywords covering different aspects
-   - Include synonyms and alternative phrasings
-   - Consider different search intents (informational, visual, etc.)
-   - Mix broad and specific terms
-
-Generate 8-12 effective keywords per subcategory. Return only a flat list of keyword strings, not objects.
-
-Return only valid JSON."""
+Generate 8-12 search queries per subcategory. Return only valid JSON."""
 
 
-class KeywordAgent:
-    """Generates search keywords per subcategory — supports batching."""
+class QueryAgent:
+    """Generates search queries per subcategory — supports batching."""
 
     def __init__(self, client: LLMClient) -> None:
         self.client = client
@@ -71,15 +57,14 @@ class KeywordAgent:
         country_or_culture: str,
     ) -> str:
         return (
-            f"Generate effective search keywords for the following subcategory:\n\n"
+            f"Generate Google search queries for the following subcategory:\n\n"
             f"Category: {category_name}\n"
             f"Subcategory: {subcategory_name}\n"
             f"Subcategory Description: {subcategory_description}\n"
             f"Country/Culture: {country_or_culture}\n\n"
-            f"REQUIREMENT: Generate 8-12 search keywords that MUST include BOTH "
-            f"native language(s) of {country_or_culture} AND English keywords. "
-            f"Use native script where appropriate. Balance: ~40-50% native, "
-            f"~40-50% English, ~10-20% mixed."
+            f"REQUIREMENT: Generate 8-12 complete, ready-to-search Google queries "
+            f"that MUST include BOTH native language(s) of {country_or_culture} AND "
+            f"English queries. Use native script where appropriate."
         )
 
     def generate_for_subcategories(
@@ -92,13 +77,12 @@ class KeywordAgent:
         batch_delay: float = 1.5,
     ) -> Dict[str, Dict[str, List[str]]]:
         """
-        Generate keywords for **all** subcategories in one batched call.
+        Generate search queries for all subcategories in one batched call.
 
         Returns:
-            ``{category_name: {subcategory_name: [kw1, kw2, ...]}}``
+            ``{category_name: {subcategory_name: [query1, query2, ...]}}``
         """
         requests: List[LLMRequest] = []
-        # map request_id → (cat_name, sub_name)
         id_map: Dict[str, tuple] = {}
 
         for cat in categories:
@@ -129,18 +113,21 @@ class KeywordAgent:
             result.setdefault(cat_name, {})
 
             if resp.success:
-                keywords = resp.data.get("keywords", [])
-                # Handle list-of-dicts fallback
-                if keywords and isinstance(keywords[0], dict):
-                    keywords = [kw.get("keyword", "") for kw in keywords if kw.get("keyword")]
-                keywords = [kw for kw in keywords if kw and isinstance(kw, str)]
-                result[cat_name][sub_name] = keywords
+                queries = resp.data.get("search_queries", []) or resp.data.get("keywords", [])
+                if queries and isinstance(queries[0], dict):
+                    queries = [q.get("query", "") or q.get("keyword", "") for q in queries if isinstance(q, dict)]
+                queries = [q for q in queries if q and isinstance(q, str)]
+                result[cat_name][sub_name] = queries
                 logger.info(
-                    "Generated %d keywords for '%s / %s'.",
-                    len(keywords), cat_name, sub_name,
+                    "Generated %d search queries for '%s / %s'.",
+                    len(queries), cat_name, sub_name,
                 )
             else:
-                logger.error("Keyword generation failed for '%s / %s': %s", cat_name, sub_name, resp.error)
+                logger.error("Query generation failed for '%s / %s': %s", cat_name, sub_name, resp.error)
                 result[cat_name][sub_name] = []
 
         return result
+
+
+# Backward-compatible alias
+KeywordAgent = QueryAgent

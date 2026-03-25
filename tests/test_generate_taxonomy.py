@@ -28,7 +28,8 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=project_root / ".env")
 
-from shared.logging_config import setup_logging
+def setup_logging():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 from tools.generate_taxonomy.tool import GenerateTaxonomyTool
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -76,13 +77,13 @@ def main():
             cat["name"]: result["category_subcategories"].get(cat["name"], [])
             for cat in categories
         }
-        category_subcategory_keywords = {
-            cat["name"]: result["category_subcategory_keywords"].get(cat["name"], {})
+        category_subcategory_queries = {
+            cat["name"]: result["category_subcategory_queries"].get(cat["name"], {})
             for cat in categories
         }
     else:
         category_subcategories = result["category_subcategories"]
-        category_subcategory_keywords = result["category_subcategory_keywords"]
+        category_subcategory_queries = result["category_subcategory_queries"]
 
     # Print summary
     logger.info("=" * 80)
@@ -92,7 +93,7 @@ def main():
     logger.info("")
 
     total_subcategories = 0
-    total_keywords = 0
+    total_queries = 0
 
     for cat in categories:
         cat_name = cat["name"]
@@ -103,11 +104,11 @@ def main():
         logger.info(f"  Subcategories: {len(subs)}")
         for sub in subs:
             sub_name = sub["name"]
-            keywords = category_subcategory_keywords.get(cat_name, {}).get(sub_name, [])
-            total_keywords += len(keywords)
-            logger.info(f"    - {sub_name}: {len(keywords)} keywords")
-            if keywords:
-                logger.info(f"      Sample keywords: {', '.join(keywords[:3])}...")
+            queries = category_subcategory_queries.get(cat_name, {}).get(sub_name, [])
+            total_queries += len(queries)
+            logger.info(f"    - {sub_name}: {len(queries)} search queries")
+            if queries:
+                logger.info(f"      Sample queries: {', '.join(queries[:3])}...")
         logger.info("")
 
     logger.info("=" * 80)
@@ -115,7 +116,7 @@ def main():
     logger.info("=" * 80)
     logger.info(f"Categories: {len(categories)}")
     logger.info(f"Subcategories: {total_subcategories}")
-    logger.info(f"Keywords: {total_keywords}")
+    logger.info(f"Search queries: {total_queries}")
     logger.info("")
 
     # Save full results
@@ -125,11 +126,11 @@ def main():
         "early_stop_categories": EARLY_STOP_CATEGORIES,
         "categories": categories,
         "category_subcategories": category_subcategories,
-        "category_subcategory_keywords": category_subcategory_keywords,
+        "category_subcategory_queries": category_subcategory_queries,
         "stats": {
             "num_categories": len(categories),
             "num_subcategories": total_subcategories,
-            "num_keywords": total_keywords,
+            "num_queries": total_queries,
         },
     }
 
