@@ -20,6 +20,7 @@ data/
 *.safetensors
 output/
 test_outputs/
+.cursor/
 
 # Logs & Reports
 logs/
