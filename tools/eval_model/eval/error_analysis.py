@@ -24,7 +24,7 @@ def cluster_failures(failures_path: str, out_dir: str) -> Dict[str, Any]:
     if not failures:
         preview = {"clusters": []}
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(preview, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps(preview, indent=2, ensure_ascii=False), encoding="utf-8")
         return preview
 
     texts = [f"{row.get('input','')} {row.get('prediction','')}" for row in failures]
@@ -51,6 +51,6 @@ def cluster_failures(failures_path: str, out_dir: str) -> Dict[str, Any]:
             )
 
     preview = {"clusters": [{"cluster": int(k), **v} for k, v in clusters.items()]}
-    out_path.write_text(json.dumps(preview, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(preview, indent=2, ensure_ascii=False), encoding="utf-8")
     return preview
 

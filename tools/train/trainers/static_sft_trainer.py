@@ -24,7 +24,7 @@ class JsonlMetricsCallback(TrainerCallback):
 
     def _write(self, logs: Dict[str, Any]) -> None:
         with open(self.metrics_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(logs) + "\n")
+            handle.write(json.dumps(logs, ensure_ascii=False) + "\n")
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs:
@@ -90,6 +90,11 @@ class StaticSFTTrainer:
             tokenized_eval = self.eval_dataset.map(self._tokenize, remove_columns=self.eval_dataset.column_names)
 
         eval_strategy_value = "steps" if tokenized_eval is not None else "no"
+        use_mps = (
+            not torch.cuda.is_available()
+            and getattr(torch.backends, "mps", None) is not None
+            and torch.backends.mps.is_available()
+        )
         args_kwargs = dict(
             output_dir=str(self.out_dir / "hf_outputs"),
             per_device_train_batch_size=self.config.batch_size,
@@ -106,8 +111,11 @@ class StaticSFTTrainer:
             bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
             fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         )
+        ta_vars = TrainingArguments.__init__.__code__.co_varnames
+        if use_mps and "use_mps_device" in ta_vars:
+            args_kwargs["use_mps_device"] = True
         # Support both new and old Transformers argument names.
-        if "evaluation_strategy" in TrainingArguments.__init__.__code__.co_varnames:
+        if "evaluation_strategy" in ta_vars:
             args_kwargs["evaluation_strategy"] = eval_strategy_value
         else:
             args_kwargs["eval_strategy"] = eval_strategy_value

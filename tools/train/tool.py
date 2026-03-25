@@ -146,7 +146,7 @@ class TrainTool(BaseTool):
             except Exception:
                 existing = []
         existing.append(record.model_dump())
-        iterations_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        iterations_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
 
         return {
             "adapter_path": adapter_path,

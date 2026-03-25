@@ -35,7 +35,7 @@ class Agent:
     def _append_decision(self, stage: str, payload: Dict[str, Any]) -> None:
         record = {"stage": stage, "payload": payload}
         with self.decisions_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def _request_json(self, user_prompt: str) -> Dict[str, Any]:
         """Send a single LLM request and return parsed JSON dict."""
@@ -65,7 +65,7 @@ class Agent:
 
     def decide_modality(self, dataset_summary: Dict[str, Any]) -> ModalityDecision:
         user_prompt = load_prompt(
-            "stage1_modality.txt", dataset_summary=json.dumps(dataset_summary, indent=2)
+            "stage1_modality.txt", dataset_summary=json.dumps(dataset_summary, indent=2, ensure_ascii=False)
         )
         payload = self._request_json(user_prompt)
         decision = ModalityDecision.model_validate(payload)
@@ -75,9 +75,9 @@ class Agent:
     def select_components(self, dataset_summary: Dict[str, Any], modality: str) -> ComponentSelectionDecision:
         user_prompt = load_prompt(
             "stage2_components.txt",
-            dataset_summary=json.dumps(dataset_summary, indent=2),
+            dataset_summary=json.dumps(dataset_summary, indent=2, ensure_ascii=False),
             modality=modality,
-            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2),
+            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2, ensure_ascii=False),
         )
         payload = self._request_json(user_prompt)
         decision = ComponentSelectionDecision.model_validate(payload)
@@ -96,10 +96,10 @@ class Agent:
     ) -> TrainingAdjustmentDecision:
         user_prompt = load_prompt(
             "stage6_train_adjust.txt",
-            metrics_summary=json.dumps(metrics_summary, indent=2),
+            metrics_summary=json.dumps(metrics_summary, indent=2, ensure_ascii=False),
             log_tail=log_tail,
-            bounds=json.dumps(bounds, indent=2),
-            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2),
+            bounds=json.dumps(bounds, indent=2, ensure_ascii=False),
+            registry_snapshot=json.dumps(self.registry_snapshot.model_dump(), indent=2, ensure_ascii=False),
         )
         payload = self._request_json(user_prompt)
         decision = TrainingAdjustmentDecision.model_validate(payload)
@@ -118,8 +118,8 @@ class Agent:
     ) -> ErrorAnalysisDecision:
         user_prompt = load_prompt(
             "stage8_error_analysis.txt",
-            failure_overview=json.dumps(failure_overview, indent=2),
-            cluster_preview=json.dumps(cluster_preview, indent=2),
+            failure_overview=json.dumps(failure_overview, indent=2, ensure_ascii=False),
+            cluster_preview=json.dumps(cluster_preview, indent=2, ensure_ascii=False),
         )
         payload = self._request_json(user_prompt)
         decision = ErrorAnalysisDecision.model_validate(payload)

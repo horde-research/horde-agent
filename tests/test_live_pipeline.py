@@ -79,39 +79,39 @@ def taxonomy_result():
                 [c["name"] for c in cats])
 
     cut_subcats = {}
-    cut_keywords = {}
+    cut_queries = {}
     for cat in cats:
         name = cat["name"]
         cut_subcats[name] = result["category_subcategories"].get(name, [])
-        cut_keywords[name] = result["category_subcategory_keywords"].get(name, {})
+        cut_queries[name] = result["category_subcategory_queries"].get(name, {})
 
     return {
         "categories": cats,
         "category_subcategories": cut_subcats,
-        "category_subcategory_keywords": cut_keywords,
+        "category_subcategory_queries": cut_queries,
         "full_result": result,
     }
 
 
 @pytest.fixture(scope="module")
-def all_keywords(taxonomy_result) -> List[str]:
-    """Extract flat keyword list from the cut taxonomy."""
-    kws: List[str] = []
-    for sub_dict in taxonomy_result["category_subcategory_keywords"].values():
-        for kw_list in sub_dict.values():
-            kws.extend(kw_list)
-    logger.info("Extracted %d keywords from taxonomy.", len(kws))
-    return kws
+def all_queries(taxonomy_result) -> List[str]:
+    """Extract flat search query list from the cut taxonomy."""
+    qs: List[str] = []
+    for sub_dict in taxonomy_result["category_subcategory_queries"].values():
+        for q_list in sub_dict.values():
+            qs.extend(q_list)
+    logger.info("Extracted %d search queries from taxonomy.", len(qs))
+    return qs
 
 
 @pytest.fixture(scope="module")
-def sft_input_jsonl(run_dir, all_keywords) -> str:
-    """Synthesize short texts from keywords (simulates data collection)."""
+def sft_input_jsonl(run_dir, all_queries) -> str:
+    """Synthesize short texts from search queries (simulates data collection)."""
     jsonl_path = os.path.join(run_dir, "collected_texts.jsonl")
     samples = [
-        f"Kazakhstan is known for {kw}. This is an important aspect of Kazakh culture "
+        f"Kazakhstan is known for {q}. This is an important aspect of Kazakh culture "
         f"that has been preserved for centuries and continues to shape modern society."
-        for kw in all_keywords[:5]
+        for q in all_queries[:5]
     ]
     with open(jsonl_path, "w", encoding="utf-8") as f:
         for text in samples:
@@ -225,21 +225,21 @@ class TestStep1_Taxonomy:
             for sub in subs:
                 assert "name" in sub
 
-    def test_keywords_per_subcategory(self, taxonomy_result):
+    def test_queries_per_subcategory(self, taxonomy_result):
         for cat in taxonomy_result["categories"]:
-            kw_dict = taxonomy_result["category_subcategory_keywords"].get(cat["name"], {})
+            q_dict = taxonomy_result["category_subcategory_queries"].get(cat["name"], {})
             subs = taxonomy_result["category_subcategories"].get(cat["name"], [])
             for sub in subs:
-                kws = kw_dict.get(sub["name"], [])
-                assert len(kws) >= 1, (
-                    f"No keywords for {cat['name']}/{sub['name']}"
+                qs = q_dict.get(sub["name"], [])
+                assert len(qs) >= 1, (
+                    f"No search queries for {cat['name']}/{sub['name']}"
                 )
 
-    def test_keywords_are_strings(self, all_keywords):
-        assert len(all_keywords) >= 2
-        for kw in all_keywords:
-            assert isinstance(kw, str)
-            assert len(kw) > 0
+    def test_queries_are_strings(self, all_queries):
+        assert len(all_queries) >= 2
+        for q in all_queries:
+            assert isinstance(q, str)
+            assert len(q) > 0
 
 
 # ─── Step 2 Tests: SFT Dataset ──────────────────────────────────────────────
