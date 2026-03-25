@@ -93,7 +93,8 @@ def _guess_mime(path: str) -> str:
 def _extract_json(text: str) -> Dict[str, Any]:
     """Extract the first valid JSON object from *text*.
 
-    Handles raw JSON, markdown fenced blocks, and text wrapped around JSON.
+    Handles raw JSON, markdown fenced blocks, thinking-model output with
+    multiple JSON-like fragments, and text wrapped around JSON.
     """
     text = text.strip()
 
@@ -103,28 +104,49 @@ def _extract_json(text: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Strip markdown fences (```json ... ```)
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json) and last line (```)
-        inner_lines = []
-        for line in lines[1:]:
-            if line.strip() == "```":
-                break
-            inner_lines.append(line)
+    # Strip markdown fences — try every ```json ... ``` block, not just the first
+    import re
+    for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL):
         try:
-            return json.loads("\n".join(inner_lines))
+            return json.loads(m.group(1).strip())
         except json.JSONDecodeError:
-            pass
+            continue
 
-    # Find first { … last }
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
+    # Find the largest valid JSON object by trying all { positions with balanced braces
+    candidates = []
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth = 0
+            in_str = False
+            escape = False
+            for j in range(i, len(text)):
+                c = text[j]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\":
+                    escape = True
+                    continue
+                if c == '"' and not escape:
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append((i, j))
+                        break
+
+    # Try candidates from largest to smallest (the real JSON is usually the biggest)
+    candidates.sort(key=lambda t: t[1] - t[0], reverse=True)
+    for start, end in candidates:
         try:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
-            pass
+            continue
 
     raise ValueError(f"No valid JSON object found in LLM response (len={len(text)}).")
 

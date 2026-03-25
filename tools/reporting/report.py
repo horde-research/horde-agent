@@ -57,24 +57,24 @@ def write_report(
     lines: List[str] = []
     lines.append("# Agentic LoRA SFT Report\n")
     lines.append("## Dataset Summary\n")
-    lines.append("```\n" + json.dumps(dataset_summary, indent=2) + "\n```\n")
+    lines.append("```\n" + json.dumps(dataset_summary, indent=2, ensure_ascii=False) + "\n```\n")
 
     lines.append("## Agent Decisions\n")
-    lines.append("```\n" + json.dumps(decisions, indent=2) + "\n```\n")
+    lines.append("```\n" + json.dumps(decisions, indent=2, ensure_ascii=False) + "\n```\n")
 
     lines.append("## Selected Components\n")
-    lines.append("```\n" + json.dumps(component_selection, indent=2) + "\n```\n")
+    lines.append("```\n" + json.dumps(component_selection, indent=2, ensure_ascii=False) + "\n```\n")
 
     lines.append("## Training Iterations\n")
     for record in iterations:
         lines.append(f"### Iteration {record.iter_idx}\n")
-        lines.append("```\n" + json.dumps(record.model_dump(), indent=2) + "\n```\n")
+        lines.append("```\n" + json.dumps(record.model_dump(), indent=2, ensure_ascii=False) + "\n```\n")
 
     lines.append("## Failure Clusters\n")
-    lines.append("```\n" + json.dumps(cluster_preview, indent=2) + "\n```\n")
+    lines.append("```\n" + json.dumps(cluster_preview, indent=2, ensure_ascii=False) + "\n```\n")
 
     lines.append("## Error Analysis\n")
-    lines.append("```\n" + json.dumps(error_analysis, indent=2) + "\n```\n")
+    lines.append("```\n" + json.dumps(error_analysis, indent=2, ensure_ascii=False) + "\n```\n")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return str(out_path)

@@ -51,7 +51,7 @@ def run_inference(
 
     with out_path.open("w", encoding="utf-8") as handle:
         for row in results:
-            handle.write(str(json.dumps(row)) + "\n")
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     return str(out_path)
 

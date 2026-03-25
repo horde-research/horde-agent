@@ -50,11 +50,11 @@ FAKE_SUBCATEGORIES = {
     ]
 }
 
-FAKE_KEYWORDS = {
-    "keywords": [
-        "Kazakh beshbarmak recipe",
-        "Kazakhstan traditional food",
-        "қазақ тағамдары",
+FAKE_SEARCH_QUERIES = {
+    "search_queries": [
+        "Kazakh beshbarmak recipe traditional preparation",
+        "Kazakhstan traditional food culture history",
+        "қазақ тағамдары дәстүрлі тағамдар",
     ]
 }
 
@@ -183,10 +183,9 @@ def _fake_generate_json_sync(request):
         if "modalitydecision" in msg:
             return _make_fake_llm_response(FAKE_MODALITY_DECISION, request.request_id)
 
-    # Taxonomy stages — check "keyword" before "subcategor" since keyword prompts
-    # contain both words but subcategory prompts don't mention "keyword".
-    if "keyword" in msg or "search keywords" in msg:
-        return _make_fake_llm_response(FAKE_KEYWORDS, request.request_id)
+    # Taxonomy stages — check "search query" / "google" before "subcategor"
+    if "search quer" in msg or "google" in msg or "keyword" in msg:
+        return _make_fake_llm_response(FAKE_SEARCH_QUERIES, request.request_id)
     if "subcategor" in msg:
         return _make_fake_llm_response(FAKE_SUBCATEGORIES, request.request_id)
     if "categories" in msg:
@@ -260,10 +259,10 @@ def _make_fake_eval_result(run_dir: str) -> Dict[str, Any]:
                 "input": f"Question {i}",
                 "prediction": f"Predicted answer {i}",
                 "reference": f"Reference answer {i}",
-            }) + "\n")
+            }, ensure_ascii=False) + "\n")
 
     with open(failures_path, "w") as f:
-        f.write(json.dumps({"id": 2, "reason": "mismatch"}) + "\n")
+        f.write(json.dumps({"id": 2, "reason": "mismatch"}, ensure_ascii=False) + "\n")
 
     return {
         "predictions_path": predictions_path,
@@ -315,15 +314,15 @@ class TestTaxonomyGeneration:
             subs = result["category_subcategories"][cat["name"]]
             assert len(subs) >= 1
 
-        assert "category_subcategory_keywords" in result
-        total_kws = sum(
-            len(kws)
-            for sub_dict in result["category_subcategory_keywords"].values()
-            for kws in sub_dict.values()
+        assert "category_subcategory_queries" in result
+        total_queries = sum(
+            len(qs)
+            for sub_dict in result["category_subcategory_queries"].values()
+            for qs in sub_dict.values()
         )
-        assert total_kws > 0
+        assert total_queries > 0
 
-    def test_keyword_count_matches_structure(self, mock_llm):
+    def test_query_count_matches_structure(self, mock_llm):
         """Verify the taxonomy tree is fully connected."""
         from tools.generate_taxonomy.tool import GenerateTaxonomyTool
 
@@ -332,14 +331,14 @@ class TestTaxonomyGeneration:
         for cat in result["categories"]:
             cat_name = cat["name"]
             assert cat_name in result["category_subcategories"]
-            assert cat_name in result["category_subcategory_keywords"]
+            assert cat_name in result["category_subcategory_queries"]
 
             for sub in result["category_subcategories"][cat_name]:
                 sub_name = sub["name"]
-                assert sub_name in result["category_subcategory_keywords"][cat_name], (
-                    f"Subcategory '{sub_name}' missing from keywords dict"
+                assert sub_name in result["category_subcategory_queries"][cat_name], (
+                    f"Subcategory '{sub_name}' missing from queries dict"
                 )
-                assert len(result["category_subcategory_keywords"][cat_name][sub_name]) > 0
+                assert len(result["category_subcategory_queries"][cat_name][sub_name]) > 0
 
     def test_empty_country_raises(self, mock_llm):
         from tools.generate_taxonomy.tool import GenerateTaxonomyTool
@@ -382,9 +381,9 @@ class TestBuildSftDataset:
 
         jsonl_path = os.path.join(run_dir, "input.jsonl")
         with open(jsonl_path, "w") as f:
-            f.write(json.dumps({"text": "Kazakhstan is a country in Central Asia with rich traditions."}) + "\n")
-            f.write(json.dumps({"text": "Beshbarmak is a beloved dish of the Kazakh people."}) + "\n")
-            f.write(json.dumps({"text": "The dombra is a two-stringed instrument played in Kazakhstan."}) + "\n")
+            f.write(json.dumps({"text": "Kazakhstan is a country in Central Asia with rich traditions."}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"text": "Beshbarmak is a beloved dish of the Kazakh people."}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"text": "The dombra is a two-stringed instrument played in Kazakhstan."}, ensure_ascii=False) + "\n")
 
         result = BuildSftDatasetTool().execute({
             "mode": "text",
@@ -412,7 +411,7 @@ class TestBuildSftDataset:
 
         jsonl_path = os.path.join(run_dir, "input.jsonl")
         with open(jsonl_path, "w") as f:
-            f.write(json.dumps({"text": "Traditional Kazakh horse games."}) + "\n")
+            f.write(json.dumps({"text": "Traditional Kazakh horse games."}, ensure_ascii=False) + "\n")
 
         result = BuildSftDatasetTool().execute({
             "mode": "text",
@@ -449,7 +448,7 @@ class TestCoreData:
         ]
         with open(jsonl_path, "w") as f:
             for row in rows:
-                f.write(json.dumps(row) + "\n")
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         ds, resolved_id = load_dataset_from_path(jsonl_path)
         assert len(ds) == 2
@@ -521,7 +520,7 @@ class TestBuildDatasetTool:
                         {"role": "user", "content": f"Question {i}"},
                         {"role": "assistant", "content": f"Answer {i}"},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         result = BuildDatasetTool().execute(jsonl_path, {"run_dir": run_dir})
 
@@ -542,7 +541,7 @@ class TestBuildDatasetTool:
                         {"role": "user", "content": f"Q{i}"},
                         {"role": "assistant", "content": f"A{i}"},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         result = BuildDatasetTool().execute(jsonl_path, {"run_dir": run_dir})
         assert "text" in result["dataset_summary"]["modality_candidates"]
@@ -590,8 +589,9 @@ class TestFullPipeline:
                 "max_iters": 1,
                 "max_steps": 10,
                 "hf_model_id": "test-model",
-                "batch_size": 2,
-                "batch_delay": 0.0,
+                "llm_batch_size": 2,
+                "llm_batch_delay": 0.0,
+                "sft_target_language": "English",
             }).run()
 
         assert result["mode"] == "full"
@@ -604,7 +604,7 @@ class TestFullPipeline:
 
         # Taxonomy produced correct structure
         assert result["taxonomy"]["num_categories"] >= 2
-        assert result["taxonomy"]["num_keywords"] > 0
+        assert result["taxonomy"]["num_queries"] > 0
 
         # SFT generation worked
         assert result["sft_generation"]["num_examples"] >= 1
@@ -644,16 +644,17 @@ class TestFullPipeline:
                 "max_iters": 1,
                 "max_steps": 10,
                 "hf_model_id": "test-model",
-                "batch_size": 2,
-                "batch_delay": 0.0,
+                "llm_batch_size": 2,
+                "llm_batch_delay": 0.0,
+                "sft_target_language": "English",
             }).run()
 
-        # CollectDataTool was called with keywords from taxonomy
+        # CollectDataTool was called with queries from taxonomy
         collect_call_args = mock_collect.call_args
         assert collect_call_args is not None
         collected_config = collect_call_args[0][0]
-        assert "keywords" in collected_config
-        assert len(collected_config["keywords"]) > 0
+        assert "queries" in collected_config
+        assert len(collected_config["queries"]) > 0
 
         # TrainTool received a dataset_ref
         train_call_args = mock_train.call_args[0]
@@ -690,7 +691,7 @@ class TestWorkflowPipeline:
                         {"role": "user", "content": f"Question {i} about Kazakhstan culture"},
                         {"role": "assistant", "content": f"Answer {i}: detailed cultural information."},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         fake_train_result = _make_fake_train_result(run_dir)
         fake_eval_result = _make_fake_eval_result(run_dir)
@@ -706,6 +707,7 @@ class TestWorkflowPipeline:
                 "max_iters": 1,
                 "max_steps": 10,
                 "hf_model_id": "test-model",
+                "sft_target_language": "English",
             }).run()
 
         assert result["mode"] == "workflow"
@@ -727,7 +729,7 @@ class TestWorkflowPipeline:
                         {"role": "user", "content": f"Q{i}"},
                         {"role": "assistant", "content": f"A{i}"},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         call_count = {"n": 0}
 
@@ -749,6 +751,7 @@ class TestWorkflowPipeline:
                 "max_iters": 3,
                 "max_steps": 5,
                 "hf_model_id": "test-model",
+                "sft_target_language": "English",
             }).run()
 
         assert result["mode"] == "workflow"
@@ -772,7 +775,7 @@ class TestMinimalAgenticPipeline:
                         {"role": "user", "content": f"Question {i} about Kazakh culture"},
                         {"role": "assistant", "content": f"Detailed answer {i} about traditions."},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         fake_train_result = _make_fake_train_result(run_dir)
         fake_eval_result = _make_fake_eval_result(run_dir)
@@ -792,6 +795,7 @@ class TestMinimalAgenticPipeline:
                 "max_iters": 1,
                 "max_steps": 10,
                 "hf_model_id": "test-model",
+                "sft_target_language": "English",
             }).run()
 
         assert result["mode"] == "minimal_agentic"
@@ -833,7 +837,7 @@ class TestMinimalAgenticPipeline:
                         {"role": "user", "content": f"Q{i}"},
                         {"role": "assistant", "content": f"A{i}"},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         fake_train_result = _make_fake_train_result(run_dir)
         Path(fake_train_result["log_paths"]["train_log"]).write_text("step 1 loss=2.5\n")
@@ -848,10 +852,10 @@ class TestMinimalAgenticPipeline:
                 "data_path": jsonl_path,
                 "run_dir": run_dir,
                 "max_iters": 1,
-                "hf_model_id_override": "my-custom-model",
+                "hf_model_id": "my-custom-model",
+                "sft_target_language": "English",
             }).run()
 
-        assert result["component_selection"]["hf_model_id"] == "my-custom-model"
         train_config_arg = mock_train.call_args[0][1]
         assert train_config_arg["hf_model_id"] == "my-custom-model"
 
@@ -867,7 +871,7 @@ class TestMinimalAgenticPipeline:
                         {"role": "user", "content": f"Q{i}"},
                         {"role": "assistant", "content": f"A{i}"},
                     ]
-                }) + "\n")
+                }, ensure_ascii=False) + "\n")
 
         retry_responses = [
             {
@@ -920,6 +924,7 @@ class TestMinimalAgenticPipeline:
                 "run_dir": run_dir,
                 "max_iters": 5,
                 "hf_model_id": "test-model",
+                "sft_target_language": "English",
             }).run()
 
         # The agent retried once then stopped, so 2 training calls total
@@ -940,17 +945,17 @@ class TestTaxonomySftBuildIntegration:
 
         # Step 1: Generate taxonomy
         taxonomy = GenerateTaxonomyTool().execute("Kazakhstan", {"batch_size": 2, "batch_delay": 0.0})
-        all_keywords = []
-        for sub_dict in taxonomy["category_subcategory_keywords"].values():
-            for kw_list in sub_dict.values():
-                all_keywords.extend(kw_list)
-        assert len(all_keywords) > 0
+        all_queries = []
+        for sub_dict in taxonomy["category_subcategory_queries"].values():
+            for q_list in sub_dict.values():
+                all_queries.extend(q_list)
+        assert len(all_queries) > 0
 
-        # Step 2: Simulate collected texts from keywords
+        # Step 2: Simulate collected texts from queries
         collected_jsonl = os.path.join(run_dir, "collected.jsonl")
         with open(collected_jsonl, "w") as f:
-            for kw in all_keywords[:6]:
-                f.write(json.dumps({"text": f"Detailed article about {kw} in Kazakhstan."}) + "\n")
+            for q in all_queries[:6]:
+                f.write(json.dumps({"text": f"Detailed article about {q} in Kazakhstan."}, ensure_ascii=False) + "\n")
 
         # Step 3: Build SFT dataset
         sft_result = BuildSftDatasetTool().execute({

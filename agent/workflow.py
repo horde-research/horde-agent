@@ -1,10 +1,6 @@
-"""Workflow execution engine.
+"""Workflow runner — executes the pipeline using PipelineConfig.
 
-Runs the workflow as a sequence of tool calls in three modes:
-
-- ``full``: country/culture input -> taxonomy -> collect -> sft -> train -> eval -> report
-- ``workflow``: start from an existing dataset path -> build -> train -> eval -> report
-- ``minimal_agentic``: LLM-driven component selection + iterative adjustments
+Every parameter is read from PipelineConfig. No hidden defaults.
 """
 
 from __future__ import annotations
@@ -13,8 +9,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.agentic.agent import Agent
-from core.agentic.agent import DEFAULT_SEED
+from config import PipelineConfig
+from core.agentic.agent import Agent, DEFAULT_SEED
 from core.registry.builtins import build_registry
 from core.types.pipeline_types import TrainConfig
 from tools.build_dataset.tool import BuildDatasetTool
@@ -30,15 +26,45 @@ from tools.train.training.tuning import TuningBounds, apply_adjustments, generat
 logger = logging.getLogger(__name__)
 
 
-class WorkflowRunner:
-    """Executes a workflow by invoking tools and passing artifacts/refs."""
+def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | None = None, adapter_path: str | None = None) -> Dict[str, str]:
+    """Push dataset/adapter to HF Hub if repo names are configured. Returns repo IDs."""
+    import os
+    from core.hf_hub import push_dataset, push_adapter
 
-    def __init__(self, tools: Dict[str, Any], config: Dict[str, Any]) -> None:
+    if cfg.hf_token and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = cfg.hf_token
+
+    pushed: Dict[str, str] = {}
+    username = cfg.hf_username or None
+
+    if dataset_path and cfg.hf_dataset_repo:
+        try:
+            repo_id = push_dataset(dataset_path, cfg.hf_dataset_repo, username=username)
+            pushed["dataset_repo_id"] = repo_id
+            logger.info("Dataset pushed to HF Hub: %s", repo_id)
+        except Exception as exc:
+            logger.error("Failed to push dataset to HF Hub: %s", exc)
+
+    if adapter_path and cfg.hf_adapter_repo:
+        try:
+            repo_id = push_adapter(adapter_path, cfg.hf_adapter_repo, username=username)
+            pushed["adapter_repo_id"] = repo_id
+            logger.info("Adapter pushed to HF Hub: %s", repo_id)
+        except Exception as exc:
+            logger.error("Failed to push adapter to HF Hub: %s", exc)
+
+    return pushed
+
+
+class WorkflowRunner:
+    """Executes a workflow by invoking tools and passing artifacts."""
+
+    def __init__(self, tools: Dict[str, Any], cfg: PipelineConfig) -> None:
         self.tools = tools
-        self.config = config
+        self.cfg = cfg
 
     def run(self) -> Dict[str, Any]:
-        mode = (self.config.get("mode") or "workflow").lower()
+        mode = self.cfg.mode.lower()
         if mode == "full":
             return self._run_full_pipeline()
         if mode == "workflow":
@@ -47,12 +73,10 @@ class WorkflowRunner:
             return self._run_minimal_agentic()
         raise ValueError(f"Unknown mode: {mode}")
 
-    # ── full pipeline: country → taxonomy → collect → sft → train → eval → report
+    # ── full pipeline ─────────────────────────────────────────────────────────
 
     def _run_full_pipeline(self) -> Dict[str, Any]:
-        run_dir = self._require("run_dir")
-        country = self._require("country")
-
+        cfg = self.cfg
         generate_taxonomy: GenerateTaxonomyTool = self.tools["generate_taxonomy"]
         collect_data: CollectDataTool = self.tools["collect_data"]
         build_sft: BuildSftDatasetTool = self.tools["build_sft_dataset"]
@@ -61,69 +85,76 @@ class WorkflowRunner:
         eval_model: EvalModelTool = self.tools["eval_model"]
         reporting: ReportingTool = self.tools["reporting"]
 
-        # Step 1 — Generate taxonomy (categories → subcategories → keywords)
-        logger.info("Step 1/7: Generating taxonomy for '%s'...", country)
-        taxonomy_config = {
-            k: self.config[k]
-            for k in ("provider", "model", "api_key", "batch_size", "batch_delay")
-            if k in self.config
-        }
-        taxonomy_out = generate_taxonomy.execute(country, taxonomy_config or None)
+        # Step 1 — Taxonomy
+        logger.info("Step 1/7: Generating taxonomy for '%s'...", cfg.country)
+        taxonomy_out = generate_taxonomy.execute(cfg.country, {
+            "batch_size": cfg.llm_batch_size,
+            "batch_delay": cfg.llm_batch_delay,
+        })
 
-        all_keywords: List[str] = []
-        for sub_dict in taxonomy_out["category_subcategory_keywords"].values():
-            for kw_list in sub_dict.values():
-                all_keywords.extend(kw_list)
-        if not all_keywords:
-            raise RuntimeError("Taxonomy generation produced zero keywords.")
-        logger.info("Taxonomy produced %d keywords.", len(all_keywords))
+        all_queries: List[str] = []
+        for sub_dict in taxonomy_out["category_subcategory_queries"].values():
+            for q_list in sub_dict.values():
+                all_queries.extend(q_list)
+        if not all_queries:
+            raise RuntimeError("Taxonomy generation produced zero search queries.")
+        logger.info("Taxonomy produced %d search queries.", len(all_queries))
 
-        # Step 2 — Collect data from the internet using keywords
-        logger.info("Step 2/7: Collecting data with %d keywords...", len(all_keywords))
-        collect_dir = str(Path(run_dir) / "collect")
+        if cfg.max_queries and len(all_queries) > cfg.max_queries:
+            logger.info("Limiting to %d queries (from %d).", cfg.max_queries, len(all_queries))
+            all_queries = all_queries[:cfg.max_queries]
+
+        # Step 2 — Collect data
+        logger.info("Step 2/7: Collecting data with %d search queries...", len(all_queries))
+        collect_dir = str(Path(cfg.run_dir) / "collect")
         collect_out = collect_data.execute({
-            "keywords": all_keywords,
+            "queries": all_queries,
             "run_dir": collect_dir,
-            **(self.config.get("collect_data") or {}),
+            "google_results_per_query": cfg.serper_results_per_query,
+            "top_results": cfg.serper_top_results,
+            "concurrency": cfg.serper_concurrency,
         })
         raw_data_path = collect_out["data_path"]
         logger.info("Collected %d samples -> %s", collect_out["num_samples"], raw_data_path)
 
-        # Step 3 — Build SFT dataset from collected text
-        # CollectDataTool saves HF Dataset on disk; export to JSONL for the SFT builder.
+        # Step 3 — SFT annotation
         logger.info("Step 3/7: Building SFT dataset from collected text...")
-        sft_dir = Path(run_dir) / "sft"
+        sft_dir = Path(cfg.run_dir) / "sft"
         sft_dir.mkdir(parents=True, exist_ok=True)
         collected_jsonl = str(sft_dir / "collected_texts.jsonl")
-        self._export_hf_dataset_to_jsonl(raw_data_path, collected_jsonl)
+        _export_hf_dataset_to_jsonl(raw_data_path, collected_jsonl)
 
         sft_out = build_sft.execute({
-            "mode": "text",
+            "mode": cfg.sft_mode,
             "input_jsonl": collected_jsonl,
             "text_field": "text",
             "output_annotations": str(sft_dir / "annotations.jsonl"),
             "output_sft": str(sft_dir / "sft.jsonl"),
-            **(self.config.get("build_sft") or {}),
+            "target_language": cfg.sft_target_language,
+            "batch_size": cfg.llm_batch_size,
+            "batch_delay": cfg.llm_batch_delay,
         })
         sft_path = sft_out["sft_path"]
         logger.info("Built %d SFT examples -> %s", sft_out["num_examples"], sft_path)
 
-        # Step 4 — Load SFT JSONL as HF dataset
-        logger.info("Step 4/7: Loading SFT dataset for training...")
-        dataset_out = build_dataset.execute(sft_path, {"run_dir": run_dir})
+        # Push SFT dataset to HF Hub
+        _push_to_hf_hub_if_configured(cfg, dataset_path=sft_path)
 
-        # Steps 5-7 — Train, evaluate, report (shared with workflow mode)
-        return self._train_eval_report(
-            run_dir=run_dir,
+        # Step 4 — Build HF dataset
+        logger.info("Step 4/7: Loading SFT dataset for training...")
+        dataset_out = build_dataset.execute(sft_path, {"run_dir": cfg.run_dir})
+
+        # Steps 5-7 — Train, evaluate, report
+        result = self._train_eval_report(
             dataset_out=dataset_out,
             train=train,
             eval_model=eval_model,
             reporting=reporting,
             extra_report_data={
                 "taxonomy": {
-                    "country": country,
+                    "country": cfg.country,
                     "num_categories": len(taxonomy_out["categories"]),
-                    "num_keywords": len(all_keywords),
+                    "num_queries": len(all_queries),
                 },
                 "collection": {
                     "num_samples": collect_out["num_samples"],
@@ -137,24 +168,29 @@ class WorkflowRunner:
             mode_name="full",
         )
 
-    # ── workflow mode: start from data_path ─────────────────────────────────
+        # Push trained adapter to HF Hub
+        adapter_path = result.get("adapter_path")
+        if adapter_path:
+            hub_info = _push_to_hf_hub_if_configured(cfg, adapter_path=adapter_path)
+            result.update(hub_info)
+
+        return result
+
+    # ── workflow mode: start from existing data_path ──────────────────────────
 
     def _run_workflow(self) -> Dict[str, Any]:
-        run_dir = self._require("run_dir")
-        data_path = self._require("data_path")
+        cfg = self.cfg
+        if not cfg.data_path:
+            raise ValueError("Workflow mode requires data_path in config.")
 
         build_dataset: BuildDatasetTool = self.tools["build_dataset"]
         train: TrainTool = self.tools["train"]
         eval_model: EvalModelTool = self.tools["eval_model"]
         reporting: ReportingTool = self.tools["reporting"]
 
-        dataset_out = build_dataset.execute(
-            data_path,
-            {"run_dir": run_dir, **(self.config.get("build_dataset") or {})},
-        )
+        dataset_out = build_dataset.execute(cfg.data_path, {"run_dir": cfg.run_dir})
 
-        return self._train_eval_report(
-            run_dir=run_dir,
+        result = self._train_eval_report(
             dataset_out=dataset_out,
             train=train,
             eval_model=eval_model,
@@ -163,12 +199,18 @@ class WorkflowRunner:
             mode_name="workflow",
         )
 
-    # ── shared train → eval → report ───────────────────────────────────────
+        adapter_path = result.get("adapter_path")
+        if adapter_path:
+            hub_info = _push_to_hf_hub_if_configured(cfg, adapter_path=adapter_path)
+            result.update(hub_info)
+
+        return result
+
+    # ── shared train → eval → report ─────────────────────────────────────────
 
     def _train_eval_report(
         self,
         *,
-        run_dir: str,
         dataset_out: Dict[str, Any],
         train: TrainTool,
         eval_model: EvalModelTool,
@@ -176,42 +218,27 @@ class WorkflowRunner:
         extra_report_data: Dict[str, Any],
         mode_name: str,
     ) -> Dict[str, Any]:
-        hf_model_id = self.config.get("hf_model_id") or self.config.get("model")
-        if not hf_model_id:
-            from core.registry.builtins import DEFAULT_HF_MODEL_ID
-            hf_model_id = DEFAULT_HF_MODEL_ID
-
-        trainer_key = self.config.get("trainer_key", "static_sft_default")
-        lora_preset_key = self.config.get("lora_preset_key", "lora_attn_small")
-        model_loader_key = self.config.get("model_loader_key", "hf_causal_lm_default")
-
-        max_iters = int(self.config.get("max_iters", 1))
-        train_config = TrainConfig(
-            seed=int(self.config.get("seed", DEFAULT_SEED)),
-            max_steps=int(self.config.get("max_steps", 200)),
-        )
-        if isinstance(self.config.get("train_config"), dict):
-            train_config = train_config.model_copy(update=self.config["train_config"])
+        cfg = self.cfg
+        train_config = TrainConfig(**cfg.train_config_dict())
 
         data_path = dataset_out["dataset_ref"]["data_path"]
-
         iterations: List[Dict[str, Any]] = []
         last_adapter_path: Optional[str] = None
 
-        for iter_idx in range(max_iters):
-            logger.info("Training iteration %d/%d...", iter_idx + 1, max_iters)
+        for iter_idx in range(cfg.max_iters):
+            logger.info("Training iteration %d/%d...", iter_idx + 1, cfg.max_iters)
             train_out = train.execute(
                 dataset_out["dataset_ref"],
                 {
                     "method": "sft",
-                    "run_dir": run_dir,
+                    "run_dir": cfg.run_dir,
                     "iter_idx": iter_idx,
-                    "hf_model_id": hf_model_id,
-                    "trainer_key": trainer_key,
-                    "lora_preset_key": lora_preset_key,
-                    "model_loader_key": model_loader_key,
+                    "hf_model_id": cfg.hf_model_id,
+                    "trainer_key": cfg.trainer_key,
+                    "lora_preset_key": cfg.lora_preset_key,
+                    "model_loader_key": cfg.model_loader_key,
                     "train_config": train_config.model_dump(),
-                    "max_samples": self.config.get("max_samples"),
+                    "max_samples": cfg.max_samples,
                 },
             )
             iterations.append(train_out["iteration_record"])
@@ -225,37 +252,35 @@ class WorkflowRunner:
             last_adapter_path,
             data_path,
             {
-                "run_dir": run_dir,
-                "hf_model_id": hf_model_id,
-                "split": self.config.get("eval_split", "train"),
-                "max_samples": self.config.get("eval_max_samples", 64),
-                "max_new_tokens": self.config.get("eval_max_new_tokens", 128),
+                "run_dir": cfg.run_dir,
+                "hf_model_id": cfg.hf_model_id,
+                "split": cfg.eval_split,
+                "max_samples": cfg.eval_max_samples,
+                "max_new_tokens": cfg.eval_max_new_tokens,
             },
         )
 
         logger.info("Generating report...")
-        report_path = reporting.finalize(
-            {
-                "dataset_summary": dataset_out["dataset_summary"],
-                "component_selection": {
-                    "dataset_loader_key": "hf_text_default",
-                    "model_loader_key": model_loader_key,
-                    "lora_preset_key": lora_preset_key,
-                    "trainer_key": trainer_key,
-                    "hf_model_id": hf_model_id,
-                    "primary_metric": "eval_loss",
-                    "rationale": f"{mode_name} mode selection",
-                },
-                "iterations": iterations,
-                "failures_path": eval_out["failures_path"],
-                "cluster_preview": eval_out["cluster_preview"],
-                "error_analysis": extra_report_data,
-            }
-        )
+        report_path = reporting.finalize({
+            "dataset_summary": dataset_out["dataset_summary"],
+            "component_selection": {
+                "dataset_loader_key": "hf_text_default",
+                "model_loader_key": cfg.model_loader_key,
+                "lora_preset_key": cfg.lora_preset_key,
+                "trainer_key": cfg.trainer_key,
+                "hf_model_id": cfg.hf_model_id,
+                "primary_metric": "eval_loss",
+                "rationale": f"{mode_name} mode selection",
+            },
+            "iterations": iterations,
+            "failures_path": eval_out["failures_path"],
+            "cluster_preview": eval_out["cluster_preview"],
+            "error_analysis": extra_report_data,
+        })
 
         return {
             "mode": mode_name,
-            "run_dir": run_dir,
+            "run_dir": cfg.run_dir,
             "adapter_path": last_adapter_path,
             "predictions_path": eval_out["predictions_path"],
             "failures_path": eval_out["failures_path"],
@@ -264,54 +289,43 @@ class WorkflowRunner:
             **extra_report_data,
         }
 
-    # ── minimal_agentic mode ────────────────────────────────────────────────
+    # ── minimal_agentic mode ─────────────────────────────────────────────────
 
     def _run_minimal_agentic(self) -> Dict[str, Any]:
-        run_dir = self._require("run_dir")
-        data_path = self._require("data_path")
+        cfg = self.cfg
+        if not cfg.data_path:
+            raise ValueError("Agentic mode requires data_path in config.")
 
         build_dataset: BuildDatasetTool = self.tools["build_dataset"]
         train: TrainTool = self.tools["train"]
         eval_model: EvalModelTool = self.tools["eval_model"]
         reporting: ReportingTool = self.tools["reporting"]
 
-        dataset_out = build_dataset.execute(
-            data_path,
-            {"run_dir": run_dir, **(self.config.get("build_dataset") or {})},
-        )
+        dataset_out = build_dataset.execute(cfg.data_path, {"run_dir": cfg.run_dir})
 
         registry = build_registry()
         snapshot = registry.snapshot()
-        agent = Agent(run_dir, snapshot)
+        agent = Agent(cfg.run_dir, snapshot)
 
         modality_decision = agent.decide_modality(dataset_out["dataset_summary"])
-        component_selection = agent.select_components(dataset_out["dataset_summary"], modality_decision.modality)
-
-        hf_model_id = component_selection.hf_model_id
-        if self.config.get("hf_model_id_override"):
-            hf_model_id = str(self.config["hf_model_id_override"])
-        if not hf_model_id:
-            hf_model_id = snapshot.default_hf_model_id
-
-        max_iters = int(self.config.get("max_iters", 1))
-        max_steps_override = self.config.get("max_steps_override")
-
-        train_config = TrainConfig(seed=int(self.config.get("seed", DEFAULT_SEED)))
-        train_config = train_config.model_copy(
-            update={"max_steps": int(max_steps_override)} if max_steps_override is not None else {"max_steps": 200}
+        component_selection = agent.select_components(
+            dataset_out["dataset_summary"], modality_decision.modality,
         )
-        if isinstance(self.config.get("train_config"), dict):
-            train_config = train_config.model_copy(update=self.config["train_config"])
+
+        hf_model_id = cfg.hf_model_id
+        if hf_model_id == PipelineConfig.model_fields["hf_model_id"].default:
+            hf_model_id = component_selection.hf_model_id or snapshot.default_hf_model_id
+
+        train_config = TrainConfig(**cfg.train_config_dict())
 
         bounds = TuningBounds()
 
-        search_trials = int(self.config.get("search_trials", 0) or 0)
-        if search_trials > 0:
+        if cfg.search_trials > 0:
             best_config = train_config
             best_score: Optional[float] = None
-            candidates = generate_random_candidates(train_config, bounds, search_trials, DEFAULT_SEED)
+            candidates = generate_random_candidates(train_config, bounds, cfg.search_trials, cfg.seed)
             for idx, candidate in enumerate(candidates):
-                trial_dir = Path(run_dir) / "search" / f"trial_{idx}"
+                trial_dir = Path(cfg.run_dir) / "search" / f"trial_{idx}"
                 trial_dir.mkdir(parents=True, exist_ok=True)
                 trial_out = train.execute(
                     dataset_out["dataset_ref"],
@@ -324,11 +338,11 @@ class WorkflowRunner:
                         "lora_preset_key": component_selection.lora_preset_key,
                         "model_loader_key": component_selection.model_loader_key,
                         "train_config": candidate.model_dump(),
-                        "max_samples": self.config.get("max_samples"),
+                        "max_samples": cfg.max_samples,
                     },
                 )
                 metrics = trial_out["metrics"]
-                score = metrics.get("best_eval_loss") if metrics.get("best_eval_loss") is not None else metrics.get("last_train_loss")
+                score = metrics.get("best_eval_loss") or metrics.get("last_train_loss")
                 if score is None:
                     continue
                 if best_score is None or float(score) < best_score:
@@ -338,22 +352,21 @@ class WorkflowRunner:
 
         iterations: List[Dict[str, Any]] = []
         last_adapter_path: Optional[str] = None
-
         lora_preset_key = component_selection.lora_preset_key
 
-        for iter_idx in range(max_iters):
+        for iter_idx in range(cfg.max_iters):
             train_out = train.execute(
                 dataset_out["dataset_ref"],
                 {
                     "method": "sft",
-                    "run_dir": run_dir,
+                    "run_dir": cfg.run_dir,
                     "iter_idx": iter_idx,
                     "hf_model_id": hf_model_id,
                     "trainer_key": component_selection.trainer_key,
                     "lora_preset_key": lora_preset_key,
                     "model_loader_key": component_selection.model_loader_key,
                     "train_config": train_config.model_dump(),
-                    "max_samples": self.config.get("max_samples"),
+                    "max_samples": cfg.max_samples,
                 },
             )
             iterations.append(train_out["iteration_record"])
@@ -374,15 +387,18 @@ class WorkflowRunner:
         if not last_adapter_path:
             raise RuntimeError("No adapter produced by training.")
 
+        # Push adapter to HF Hub
+        hub_info = _push_to_hf_hub_if_configured(cfg, adapter_path=last_adapter_path)
+
         eval_out = eval_model.execute(
             last_adapter_path,
-            data_path,
+            cfg.data_path,
             {
-                "run_dir": run_dir,
+                "run_dir": cfg.run_dir,
                 "hf_model_id": hf_model_id,
-                "split": self.config.get("eval_split", "train"),
-                "max_samples": self.config.get("eval_max_samples", 64),
-                "max_new_tokens": self.config.get("eval_max_new_tokens", 128),
+                "split": cfg.eval_split,
+                "max_samples": cfg.eval_max_samples,
+                "max_new_tokens": cfg.eval_max_new_tokens,
             },
         )
 
@@ -394,22 +410,22 @@ class WorkflowRunner:
         except Exception:
             failure_overview["total_failures"] = None
 
-        error_analysis = agent.analyze_errors(failure_overview, eval_out["cluster_preview"]).model_dump()
+        error_analysis = agent.analyze_errors(
+            failure_overview, eval_out["cluster_preview"],
+        ).model_dump()
 
-        report_path = reporting.finalize(
-            {
-                "dataset_summary": dataset_out["dataset_summary"],
-                "component_selection": component_selection.model_dump() | {"hf_model_id": hf_model_id},
-                "iterations": iterations,
-                "failures_path": eval_out["failures_path"],
-                "cluster_preview": eval_out["cluster_preview"],
-                "error_analysis": error_analysis,
-            }
-        )
+        report_path = reporting.finalize({
+            "dataset_summary": dataset_out["dataset_summary"],
+            "component_selection": component_selection.model_dump() | {"hf_model_id": hf_model_id},
+            "iterations": iterations,
+            "failures_path": eval_out["failures_path"],
+            "cluster_preview": eval_out["cluster_preview"],
+            "error_analysis": error_analysis,
+        })
 
         return {
             "mode": "minimal_agentic",
-            "run_dir": run_dir,
+            "run_dir": cfg.run_dir,
             "adapter_path": last_adapter_path,
             "component_selection": component_selection.model_dump() | {"hf_model_id": hf_model_id},
             "predictions_path": eval_out["predictions_path"],
@@ -417,21 +433,15 @@ class WorkflowRunner:
             "cluster_preview": eval_out["cluster_preview"],
             "error_analysis": error_analysis,
             "report_path": report_path,
+            **hub_info,
         }
 
-    @staticmethod
-    def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
-        """Convert a HF save_to_disk dataset to JSONL for downstream tools."""
-        import json
-        from datasets import load_from_disk
 
-        ds = load_from_disk(hf_dataset_path)
-        with open(jsonl_path, "w", encoding="utf-8") as f:
-            for row in ds:
-                f.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
+def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
+    import json
+    from datasets import load_from_disk
 
-    def _require(self, key: str) -> Any:
-        value = self.config.get(key)
-        if value is None or value == "":
-            raise ValueError(f"Missing required config key: {key}")
-        return value
+    ds = load_from_disk(hf_dataset_path)
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for row in ds:
+            f.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
