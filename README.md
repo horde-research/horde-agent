@@ -55,3 +55,16 @@ python -m agent.main \
 - SFT (Supervised Fine-Tuning)
 - GRPO (Group Relative Policy Optimization)
 - DPO (Direct Preference Optimization)
+
+## Orchestration Backends
+
+The pipeline supports two orchestration backends from CLI:
+
+- `native` (default) — existing `WorkflowRunner` orchestration
+- `crewai` — CrewAI planning/review layer + `WorkflowRunner` execution
+
+Run with CrewAI:
+
+```bash
+python -m agent.main --orchestrator crewai
+```

@@ -24,6 +24,7 @@ import logging
 import sys
 
 from agent.orchestrator import Orchestrator
+from agent.crewai_orchestrator import CrewAIOrchestrator
 
 
 def _setup_logging(level: str) -> None:
@@ -46,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_samples", type=int, default=None, help="Limit dataset to N samples")
     parser.add_argument("--hf_model_id", default=None, help="Base HuggingFace model id for training")
     parser.add_argument("--search_trials", type=int, default=None, help="Random search trials before training")
+    parser.add_argument(
+        "--orchestrator",
+        default="native",
+        choices=["native", "crewai"],
+        help="Orchestration backend: native WorkflowRunner or CrewAI wrapper.",
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -88,7 +95,11 @@ def main() -> None:
 
     logger.info("Loading config from .env%s...",
                 f" + {len(overrides)} CLI overrides" if overrides else "")
-    result = Orchestrator(None, **overrides).run()
+    if args.orchestrator == "crewai":
+        logger.info("Using CrewAI orchestrator backend.")
+        result = CrewAIOrchestrator(None, **overrides).run()
+    else:
+        result = Orchestrator(None, **overrides).run()
     logger.info("Pipeline complete. Report: %s", result.get("report_path"))
 
 
