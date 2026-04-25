@@ -10,8 +10,13 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - minimal test env fallback
+    def load_dotenv(*args, **kwargs):
+        return False
 
 
 class PipelineConfig(BaseModel):
@@ -58,6 +63,19 @@ class PipelineConfig(BaseModel):
     train_eval_steps: int = 50
     max_samples: Optional[int] = None
     search_trials: int = 0
+    sft_train_fraction: float = 0.8
+
+    # ── Optional GRPO RL phase ────────────────────────────────────────────────
+    enable_grpo: bool = False
+    grpo_steps: int = 100
+    grpo_lr: float = 1e-5
+    grpo_batch_size: int = 2
+    grpo_grad_accum: int = 4
+    grpo_num_generations: int = 4
+    grpo_max_prompt_length: int = 512
+    grpo_max_completion_length: int = 128
+    grpo_judge_batch_size: int = 5
+    grpo_judge_batch_delay: float = 1.5
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     eval_split: str = "train"
@@ -96,6 +114,17 @@ class PipelineConfig(BaseModel):
             "max_samples": os.getenv("MAX_SAMPLES"),
             "train_batch_size": os.getenv("TRAIN_BATCH_SIZE"),
             "train_max_seq_len": os.getenv("TRAIN_MAX_SEQ_LEN"),
+            "sft_train_fraction": os.getenv("SFT_TRAIN_FRACTION"),
+            "enable_grpo": os.getenv("ENABLE_GRPO"),
+            "grpo_steps": os.getenv("GRPO_STEPS"),
+            "grpo_lr": os.getenv("GRPO_LR"),
+            "grpo_batch_size": os.getenv("GRPO_BATCH_SIZE"),
+            "grpo_grad_accum": os.getenv("GRPO_GRAD_ACCUM"),
+            "grpo_num_generations": os.getenv("GRPO_NUM_GENERATIONS"),
+            "grpo_max_prompt_length": os.getenv("GRPO_MAX_PROMPT_LENGTH"),
+            "grpo_max_completion_length": os.getenv("GRPO_MAX_COMPLETION_LENGTH"),
+            "grpo_judge_batch_size": os.getenv("GRPO_JUDGE_BATCH_SIZE"),
+            "grpo_judge_batch_delay": os.getenv("GRPO_JUDGE_BATCH_DELAY"),
             "eval_max_samples": os.getenv("EVAL_MAX_SAMPLES"),
             "hf_username": os.getenv("HF_USERNAME") or "",
             "hf_token": os.getenv("HF_TOKEN") or "",
@@ -118,5 +147,20 @@ class PipelineConfig(BaseModel):
             "weight_decay": self.train_weight_decay,
             "max_seq_len": self.train_max_seq_len,
             "eval_steps": self.train_eval_steps,
+            "seed": self.seed,
+        }
+
+    def grpo_config_dict(self) -> dict:
+        """Return the GRPOConfig-compatible dict."""
+        return {
+            "lr": self.grpo_lr,
+            "batch_size": self.grpo_batch_size,
+            "grad_accum": self.grpo_grad_accum,
+            "max_steps": self.grpo_steps,
+            "num_generations": self.grpo_num_generations,
+            "max_prompt_length": self.grpo_max_prompt_length,
+            "max_completion_length": self.grpo_max_completion_length,
+            "judge_batch_size": self.grpo_judge_batch_size,
+            "judge_batch_delay": self.grpo_judge_batch_delay,
             "seed": self.seed,
         }

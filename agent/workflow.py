@@ -239,6 +239,7 @@ class WorkflowRunner:
                     "model_loader_key": cfg.model_loader_key,
                     "train_config": train_config.model_dump(),
                     "max_samples": cfg.max_samples,
+                    "dataset_slice": {"part": "sft", "sft_train_fraction": cfg.sft_train_fraction},
                 },
             )
             iterations.append(train_out["iteration_record"])
@@ -246,6 +247,26 @@ class WorkflowRunner:
 
         if not last_adapter_path:
             raise RuntimeError("No adapter produced by training.")
+
+        if cfg.enable_grpo:
+            logger.info("Running GRPO phase after SFT...")
+            grpo_out = train.execute(
+                dataset_out["dataset_ref"],
+                {
+                    "method": "grpo",
+                    "run_dir": cfg.run_dir,
+                    "iter_idx": len(iterations),
+                    "hf_model_id": cfg.hf_model_id,
+                    "lora_preset_key": cfg.lora_preset_key,
+                    "model_loader_key": cfg.model_loader_key,
+                    "grpo_config": cfg.grpo_config_dict(),
+                    "max_samples": cfg.max_samples,
+                    "dataset_slice": {"part": "rl", "sft_train_fraction": cfg.sft_train_fraction},
+                    "previous_adapter_path": last_adapter_path,
+                },
+            )
+            iterations.append(grpo_out["iteration_record"])
+            last_adapter_path = grpo_out["adapter_path"]
 
         logger.info("Evaluating model...")
         eval_out = eval_model.execute(
@@ -269,7 +290,7 @@ class WorkflowRunner:
                 "lora_preset_key": cfg.lora_preset_key,
                 "trainer_key": cfg.trainer_key,
                 "hf_model_id": cfg.hf_model_id,
-                "primary_metric": "eval_loss",
+                "primary_metric": "reward" if cfg.enable_grpo else "eval_loss",
                 "rationale": f"{mode_name} mode selection",
             },
             "iterations": iterations,
@@ -339,6 +360,7 @@ class WorkflowRunner:
                         "model_loader_key": component_selection.model_loader_key,
                         "train_config": candidate.model_dump(),
                         "max_samples": cfg.max_samples,
+                        "dataset_slice": {"part": "sft", "sft_train_fraction": cfg.sft_train_fraction},
                     },
                 )
                 metrics = trial_out["metrics"]
@@ -367,6 +389,7 @@ class WorkflowRunner:
                     "model_loader_key": component_selection.model_loader_key,
                     "train_config": train_config.model_dump(),
                     "max_samples": cfg.max_samples,
+                    "dataset_slice": {"part": "sft", "sft_train_fraction": cfg.sft_train_fraction},
                 },
             )
             iterations.append(train_out["iteration_record"])
@@ -386,6 +409,25 @@ class WorkflowRunner:
 
         if not last_adapter_path:
             raise RuntimeError("No adapter produced by training.")
+
+        if cfg.enable_grpo:
+            grpo_out = train.execute(
+                dataset_out["dataset_ref"],
+                {
+                    "method": "grpo",
+                    "run_dir": cfg.run_dir,
+                    "iter_idx": len(iterations),
+                    "hf_model_id": hf_model_id,
+                    "lora_preset_key": lora_preset_key,
+                    "model_loader_key": component_selection.model_loader_key,
+                    "grpo_config": cfg.grpo_config_dict(),
+                    "max_samples": cfg.max_samples,
+                    "dataset_slice": {"part": "rl", "sft_train_fraction": cfg.sft_train_fraction},
+                    "previous_adapter_path": last_adapter_path,
+                },
+            )
+            iterations.append(grpo_out["iteration_record"])
+            last_adapter_path = grpo_out["adapter_path"]
 
         # Push adapter to HF Hub
         hub_info = _push_to_hf_hub_if_configured(cfg, adapter_path=last_adapter_path)

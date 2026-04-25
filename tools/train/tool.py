@@ -13,9 +13,33 @@ from tools.base_tool import BaseTool
 from core.data.hf_dataset import load_dataset_from_path
 from core.ml.lora import attach_lora, preset_from_dict
 from core.registry.builtins import build_registry
-from core.types.pipeline_types import IterationRecord, TrainConfig
+from core.types.pipeline_types import GRPOConfig, IterationRecord, TrainConfig
 from tools.train.training.log_parser import parse_metrics
+from tools.train.training.grpo_runner import run_grpo_iteration
 from tools.train.training.sft_runner import run_sft_iteration
+
+
+def _apply_dataset_slice(dataset, slice_config: Optional[Dict[str, Any]]):
+    """Select deterministic SFT/RL portions after any max_samples cap."""
+    if not slice_config:
+        return dataset
+
+    part = str(slice_config.get("part") or "all").lower()
+    if part not in {"sft", "rl"}:
+        return dataset
+
+    total = len(dataset)
+    if total <= 1:
+        return dataset
+
+    fraction = float(slice_config.get("sft_train_fraction", 0.8))
+    split_idx = int(total * fraction)
+    split_idx = max(1, min(total - 1, split_idx))
+
+    if part == "sft":
+        return dataset.select(range(0, split_idx))
+    return dataset.select(range(split_idx, total))
+
 
 class TrainTool(BaseTool):
     """
@@ -67,8 +91,8 @@ class TrainTool(BaseTool):
             }
         """
         method = (config.get("method") or "sft").lower()
-        if method != "sft":
-            raise NotImplementedError("Only SFT is implemented in the migrated training stack.")
+        if method not in {"sft", "grpo"}:
+            raise NotImplementedError(f"Training method '{method}' is not implemented in the migrated training stack.")
 
         run_dir = config.get("run_dir") or config.get("out_dir")
         if not run_dir:
@@ -99,12 +123,12 @@ class TrainTool(BaseTool):
         model_loader_key = config.get("model_loader_key", "hf_causal_lm_default")
 
         train_config = TrainConfig.model_validate(config.get("train_config") or {})
+        grpo_config = GRPOConfig.model_validate(config.get("grpo_config") or {})
         if config.get("max_steps") is not None:
             train_config = train_config.model_copy(update={"max_steps": int(config["max_steps"])})
 
         registry = build_registry()
         model_loader = registry.get_model_loader(model_loader_key)
-        trainer_cls = registry.get_trainer(trainer_key)
         lora_preset_dict = registry.get_lora_preset(lora_preset_key)
 
         dataset, _ = load_dataset_from_path(data_path, split=split)
@@ -112,24 +136,44 @@ class TrainTool(BaseTool):
             max_samples_int = int(max_samples)
             if max_samples_int > 0 and len(dataset) > max_samples_int:
                 dataset = dataset.select(range(max_samples_int))
+        dataset = _apply_dataset_slice(dataset, config.get("dataset_slice"))
 
         model, tokenizer = model_loader(hf_model_id)
-        model = attach_lora(model, preset_from_dict(lora_preset_dict))
 
         iter_dir = Path(run_dir) / "iterations" / f"iter_{iter_idx}"
-        adapter_path, log_paths = run_sft_iteration(
-            model=model,
-            tokenizer=tokenizer,
-            dataset=dataset,
-            trainer_cls=trainer_cls,
-            train_config=train_config,
-            out_dir=str(iter_dir),
-        )
+        if method == "sft":
+            trainer_cls = registry.get_trainer(trainer_key)
+            model = attach_lora(model, preset_from_dict(lora_preset_dict))
+            adapter_path, log_paths = run_sft_iteration(
+                model=model,
+                tokenizer=tokenizer,
+                dataset=dataset,
+                trainer_cls=trainer_cls,
+                train_config=train_config,
+                out_dir=str(iter_dir),
+            )
+            record_config = train_config
+        else:
+            previous_adapter_path = config.get("previous_adapter_path")
+            if not previous_adapter_path and not config.get("allow_grpo_from_base", False):
+                raise ValueError("GRPO requires config['previous_adapter_path'] unless allow_grpo_from_base is true.")
+            if not previous_adapter_path:
+                model = attach_lora(model, preset_from_dict(lora_preset_dict))
+            adapter_path, log_paths = run_grpo_iteration(
+                model=model,
+                tokenizer=tokenizer,
+                dataset=dataset,
+                grpo_config=grpo_config,
+                out_dir=str(iter_dir),
+                previous_adapter_path=str(previous_adapter_path) if previous_adapter_path else None,
+            )
+            record_config = grpo_config
         metrics = parse_metrics(log_paths["metrics"])
 
         record = IterationRecord(
             iter_idx=iter_idx,
-            config=train_config,
+            method=method,
+            config=record_config,
             metrics=metrics,
             adapter_path=adapter_path,
             log_paths=log_paths,
