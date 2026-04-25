@@ -30,8 +30,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Type, TypeVar
 
-import httpx
 from pydantic import BaseModel
+
+try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - exercised only in minimal test envs
+    httpx = None
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -407,6 +411,12 @@ class LLMClient:
 
     async def generate_json(self, request: LLMRequest) -> LLMResponse:
         """Send a single request and return parsed JSON."""
+        if httpx is None:
+            return LLMResponse(
+                request_id=request.request_id,
+                success=False,
+                error="The 'httpx' package is required for LLM API calls.",
+            )
         async with httpx.AsyncClient(timeout=self.timeout) as http:
             try:
                 data = await self._send_with_retries(http, request)
@@ -431,6 +441,15 @@ class LLMClient:
     ) -> List[LLMResponse]:
         """Send many requests concurrently in batches, with delays between batches."""
         requests_list = list(requests)
+        if httpx is None:
+            return [
+                LLMResponse(
+                    request_id=req.request_id,
+                    success=False,
+                    error="The 'httpx' package is required for LLM API calls.",
+                )
+                for req in requests_list
+            ]
         all_responses: List[LLMResponse] = []
 
         logger.info(

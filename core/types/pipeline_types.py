@@ -34,6 +34,21 @@ class TrainConfig(BaseModel):
     seed: int = 42
 
 
+class GRPOConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lr: float = 1e-5
+    batch_size: int = 2
+    grad_accum: int = 4
+    max_steps: int = 100
+    num_generations: int = 4
+    max_prompt_length: int = 512
+    max_completion_length: int = 128
+    judge_batch_size: int = 5
+    judge_batch_delay: float = 1.5
+    seed: int = 42
+
+
 class MetricsSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -41,13 +56,17 @@ class MetricsSummary(BaseModel):
     best_eval_loss: Optional[float]
     last_train_loss: Optional[float]
     last_eval_loss: Optional[float]
+    last_reward: Optional[float] = None
+    mean_reward: Optional[float] = None
+    last_kl: Optional[float] = None
 
 
 class IterationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     iter_idx: int
-    config: TrainConfig
+    method: str = "sft"
+    config: TrainConfig | GRPOConfig
     metrics: MetricsSummary
     adapter_path: str
     log_paths: Dict[str, str]

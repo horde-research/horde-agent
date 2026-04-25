@@ -46,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_samples", type=int, default=None, help="Limit dataset to N samples")
     parser.add_argument("--hf_model_id", default=None, help="Base HuggingFace model id for training")
     parser.add_argument("--search_trials", type=int, default=None, help="Random search trials before training")
+    parser.add_argument("--sft_train_fraction", type=float, default=None, help="Dataset fraction for SFT before GRPO")
+    parser.add_argument("--enable_grpo", action="store_true", help="Run a GRPO phase after SFT")
+    parser.add_argument("--grpo_steps", type=int, default=None, help="Max GRPO training steps")
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -79,6 +82,12 @@ def main() -> None:
         overrides["hf_model_id"] = args.hf_model_id
     if args.search_trials is not None:
         overrides["search_trials"] = args.search_trials
+    if args.sft_train_fraction is not None:
+        overrides["sft_train_fraction"] = args.sft_train_fraction
+    if args.enable_grpo:
+        overrides["enable_grpo"] = True
+    if args.grpo_steps is not None:
+        overrides["grpo_steps"] = args.grpo_steps
 
     # Auto-detect mode
     if args.mode:
