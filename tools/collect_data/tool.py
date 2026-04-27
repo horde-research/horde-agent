@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from tools.base_tool import BaseTool
+from tools.collect_data.images import collect_images
 
 try:
     from datasets import Dataset
@@ -76,6 +77,10 @@ class CollectDataTool(BaseTool):
         top_n = config.get("top_results", 5)
         concurrency = config.get("concurrency", 50)
         max_samples: Optional[int] = config.get("size")
+        do_images: bool = bool(config.get("collect_images", False))
+        image_min_width: int = int(config.get("image_min_width", 300))
+        image_min_height: int = int(config.get("image_min_height", 300))
+        image_context_size: int = int(config.get("image_context_size", 500))
 
         raw = asyncio.run(
             _search_and_scrape(
@@ -100,6 +105,36 @@ class CollectDataTool(BaseTool):
         dataset_dir = run_dir / "dataset"
         dataset.save_to_disk(str(dataset_dir))
 
+        images_meta: Dict[str, Any] = {}
+        if do_images:
+            scraped_urls = [
+                page["url"]
+                for pages in raw.values()
+                for page in pages
+                if page.get("url")
+            ]
+            images_dir = run_dir / "images"
+            image_records = asyncio.run(
+                collect_images(
+                    scraped_urls,
+                    images_dir,
+                    concurrency=concurrency,
+                    context_size=image_context_size,
+                    min_width=image_min_width,
+                    min_height=image_min_height,
+                )
+            )
+            images_json = run_dir / "images.json"
+            images_json.write_text(
+                json.dumps(image_records, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            images_meta = {
+                "images_dir": str(images_dir),
+                "images_index": str(images_json),
+                "num_images": len(image_records),
+            }
+            logger.info("Collected %d images into %s", len(image_records), images_dir)
+
         return {
             "data_path": str(dataset_dir),
             "num_samples": len(dataset),
@@ -108,6 +143,7 @@ class CollectDataTool(BaseTool):
                 "run_dir": str(run_dir),
                 "raw_result_path": str(raw_path),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
+                **images_meta,
             },
         }
 

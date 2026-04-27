@@ -37,6 +37,12 @@ class PipelineConfig(BaseModel):
     serper_concurrency: int = 50
     max_queries: Optional[int] = None
 
+    # ── Image collection (optional) ─────────────────────────────────────────
+    collect_images: bool = False
+    image_min_width: int = 300
+    image_min_height: int = 300
+    image_context_size: int = 500
+
     # ── SFT annotation ───────────────────────────────────────────────────────
     sft_mode: str = "text"
     sft_target_language: str
@@ -89,6 +95,10 @@ class PipelineConfig(BaseModel):
             "serper_results_per_query": os.getenv("SERPER_RESULTS_PER_QUERY"),
             "serper_top_results": os.getenv("SERPER_TOP_RESULTS"),
             "max_queries": os.getenv("MAX_QUERIES"),
+            "collect_images": os.getenv("COLLECT_IMAGES"),
+            "image_min_width": os.getenv("IMAGE_MIN_WIDTH"),
+            "image_min_height": os.getenv("IMAGE_MIN_HEIGHT"),
+            "image_context_size": os.getenv("IMAGE_CONTEXT_SIZE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
             "hf_model_id": os.getenv("HF_MODEL_ID"),
             "max_iters": os.getenv("MAX_ITERS"),
