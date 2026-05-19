@@ -4,14 +4,16 @@
 pyyaml>=6.0
 pydantic>=2.0
 python-dotenv>=1.0.0
+httpx>=0.24.0
 
 # ML/Training (CPU-compatible versions)
 numpy<2.0  # Required for PyTorch 2.2.2 compatibility
 torch==2.2.2  # Latest available for macOS
-transformers>=4.30.0,<5.0  # Compatible with PyTorch 2.2.2
-datasets>=2.14.0
+transformers>=4.46.0,<5.0  # Compatible with TRL GRPO
+datasets>=2.21.0
 accelerate>=0.20.0
 peft>=0.4.0
+trl>=0.14.0,<0.15.0
 fsspec<=2025.10.0  # Required by datasets
 
 # Reporting

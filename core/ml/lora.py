@@ -62,9 +62,9 @@ def save_lora_adapters(model, out_dir: str) -> str:
     return out_dir
 
 
-def load_lora_adapters(base_model, adapter_dir: str):
+def load_lora_adapters(base_model, adapter_dir: str, *, is_trainable: bool = False):
     """Load previously saved LoRA adapters onto a base model."""
-    return PeftModel.from_pretrained(base_model, adapter_dir)
+    return PeftModel.from_pretrained(base_model, adapter_dir, is_trainable=is_trainable)
 
 
 def preset_from_dict(preset_dict: dict) -> LoraPreset:

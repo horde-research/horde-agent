@@ -15,6 +15,10 @@ def parse_metrics(metrics_path: str) -> MetricsSummary:
     best_eval = None
     last_train = None
     last_eval = None
+    last_reward = None
+    reward_sum = 0.0
+    reward_count = 0
+    last_kl = None
     last_step = 0
 
     path = Path(metrics_path)
@@ -39,12 +43,23 @@ def parse_metrics(metrics_path: str) -> MetricsSummary:
                 last_eval = float(record["eval_loss"])
                 if best_eval is None or last_eval < best_eval:
                     best_eval = last_eval
+            reward_value = record.get("reward") or record.get("rewards/mean") or record.get("mean_reward")
+            if reward_value is not None:
+                last_reward = float(reward_value)
+                reward_sum += last_reward
+                reward_count += 1
+            kl_value = record.get("kl") or record.get("objective/kl")
+            if kl_value is not None:
+                last_kl = float(kl_value)
 
     return MetricsSummary(
         steps=last_step,
         best_eval_loss=best_eval,
         last_train_loss=last_train,
         last_eval_loss=last_eval,
+        last_reward=last_reward,
+        mean_reward=(reward_sum / reward_count) if reward_count else None,
+        last_kl=last_kl,
     )
 
 

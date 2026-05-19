@@ -247,6 +247,61 @@ def _make_fake_train_result(run_dir: str, iter_idx: int = 0) -> Dict[str, Any]:
     }
 
 
+def _make_fake_grpo_result(run_dir: str, iter_idx: int = 1) -> Dict[str, Any]:
+    """Build a realistic fake GRPO TrainTool.execute() result."""
+    adapter_path = os.path.join(run_dir, "grpo_adapters", f"iter_{iter_idx}")
+    os.makedirs(adapter_path, exist_ok=True)
+
+    train_log = os.path.join(run_dir, "grpo_train.log")
+    Path(train_log).write_text("step 1 reward=0.6\nstep 5 reward=0.8\n")
+
+    metrics_path = os.path.join(run_dir, "grpo_metrics.jsonl")
+    Path(metrics_path).write_text(json.dumps({"step": 5, "reward": 0.8}, ensure_ascii=False) + "\n")
+    judge_path = os.path.join(run_dir, "judge_rewards.jsonl")
+    Path(judge_path).write_text("")
+
+    return {
+        "adapter_path": adapter_path,
+        "log_paths": {"train_log": train_log, "metrics": metrics_path, "judge_rewards": judge_path},
+        "metrics": {
+            "steps": 5,
+            "best_eval_loss": None,
+            "last_train_loss": None,
+            "last_eval_loss": None,
+            "last_reward": 0.8,
+            "mean_reward": 0.8,
+            "last_kl": None,
+        },
+        "iteration_record": {
+            "iter_idx": iter_idx,
+            "method": "grpo",
+            "config": {
+                "lr": 1e-5,
+                "batch_size": 2,
+                "grad_accum": 4,
+                "max_steps": 5,
+                "num_generations": 4,
+                "max_prompt_length": 512,
+                "max_completion_length": 128,
+                "judge_batch_size": 5,
+                "judge_batch_delay": 1.5,
+                "seed": 42,
+            },
+            "metrics": {
+                "steps": 5,
+                "best_eval_loss": None,
+                "last_train_loss": None,
+                "last_eval_loss": None,
+                "last_reward": 0.8,
+                "mean_reward": 0.8,
+                "last_kl": None,
+            },
+            "adapter_path": adapter_path,
+            "log_paths": {"train_log": train_log, "metrics": metrics_path, "judge_rewards": judge_path},
+        },
+    }
+
+
 def _make_fake_eval_result(run_dir: str) -> Dict[str, Any]:
     """Build a realistic fake EvalModelTool.execute() result."""
     predictions_path = os.path.join(run_dir, "predictions.jsonl")
@@ -547,6 +602,55 @@ class TestBuildDatasetTool:
         assert "text" in result["dataset_summary"]["modality_candidates"]
 
 
+class TestGRPOReward:
+    def test_dataset_slice_splits_sft_and_rl_portions(self):
+        from datasets import Dataset
+        from tools.train.tool import _apply_dataset_slice
+
+        dataset = Dataset.from_list([{"id": i} for i in range(10)])
+        sft_dataset = _apply_dataset_slice(dataset, {"part": "sft", "sft_train_fraction": 0.8})
+        rl_dataset = _apply_dataset_slice(dataset, {"part": "rl", "sft_train_fraction": 0.8})
+
+        assert list(sft_dataset["id"]) == list(range(8))
+        assert list(rl_dataset["id"]) == [8, 9]
+
+    def test_llm_judge_reward_parses_scores(self, run_dir):
+        from core.llm.client import LLMResponse
+        from tools.train.training.grpo_rewards import LLMJudgeReward, build_judge_user_message
+
+        class FakeLLMClient:
+            def generate_json_batch_sync(self, requests, *, batch_size=5, batch_delay_seconds=1.5):
+                return [
+                    LLMResponse(
+                        request_id=req.request_id,
+                        success=True,
+                        data={"score": 0.75, "rationale": "Mostly correct."},
+                    )
+                    for req in requests
+                ]
+
+        reward = LLMJudgeReward(
+            log_path=os.path.join(run_dir, "judge_rewards.jsonl"),
+            llm_client=FakeLLMClient(),
+        )
+        scores = reward(
+            prompts=["What is kumis?"],
+            completions=["Kumis is fermented mare's milk."],
+            reference=["Kumis is a fermented dairy drink made from mare's milk."],
+        )
+
+        assert scores == [0.75]
+        logs = Path(run_dir, "judge_rewards.jsonl").read_text()
+        assert "Mostly correct" in logs
+
+        prompt = build_judge_user_message(
+            prompt="Explain a traditional dish.",
+            reference="The answer should describe beshbarmak.",
+            completion="Beshbarmak is a Kazakh dish.",
+        )
+        assert "cult" in prompt.lower() or "REFERENCE ANSWER" in prompt
+
+
 # ─── End-to-end: Full pipeline (country → taxonomy → collect → sft → … ) ────
 
 class TestFullPipeline:
@@ -756,6 +860,58 @@ class TestWorkflowPipeline:
 
         assert result["mode"] == "workflow"
         assert mock_train.call_count == 3
+
+    def test_workflow_mode_enable_grpo_runs_after_sft(self, run_dir):
+        """When enabled, workflow mode runs SFT then GRPO and evaluates the GRPO adapter."""
+        from agent.orchestrator import Orchestrator
+
+        jsonl_path = os.path.join(run_dir, "sft.jsonl")
+        with open(jsonl_path, "w") as f:
+            for i in range(8):
+                f.write(json.dumps({
+                    "messages": [
+                        {"role": "user", "content": f"Question {i}"},
+                        {"role": "assistant", "content": f"Answer {i}"},
+                    ]
+                }, ensure_ascii=False) + "\n")
+
+        calls = []
+
+        def _train_side_effect(dataset_ref, config):
+            calls.append(config)
+            if config["method"] == "grpo":
+                assert "previous_adapter_path" in config
+                assert config["previous_adapter_path"] == calls[0]["_adapter_path"]
+                return _make_fake_grpo_result(run_dir, iter_idx=1)
+            result = _make_fake_train_result(run_dir, iter_idx=0)
+            config["_adapter_path"] = result["adapter_path"]
+            return result
+
+        fake_eval_result = _make_fake_eval_result(run_dir)
+
+        with (
+            patch("tools.train.tool.TrainTool.execute", side_effect=_train_side_effect) as mock_train,
+            patch("tools.eval_model.tool.EvalModelTool.execute", return_value=fake_eval_result) as mock_eval,
+        ):
+            result = Orchestrator({
+                "mode": "workflow",
+                "data_path": jsonl_path,
+                "run_dir": run_dir,
+                "max_iters": 1,
+                "max_steps": 10,
+                "enable_grpo": True,
+                "grpo_steps": 5,
+                "hf_model_id": "test-model",
+                "sft_target_language": "English",
+            }).run()
+
+        assert result["mode"] == "workflow"
+        assert mock_train.call_count == 2
+        assert [call["method"] for call in calls] == ["sft", "grpo"]
+        assert calls[0]["dataset_slice"] == {"part": "sft", "sft_train_fraction": 0.8}
+        assert calls[1]["dataset_slice"] == {"part": "rl", "sft_train_fraction": 0.8}
+        assert result["adapter_path"] == _make_fake_grpo_result(run_dir, iter_idx=1)["adapter_path"]
+        assert mock_eval.call_args[0][0] == result["adapter_path"]
 
 
 # ─── End-to-end: Minimal agentic mode ────────────────────────────────────────
