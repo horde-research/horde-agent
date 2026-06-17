@@ -36,6 +36,13 @@ mlruns/
 pipeline.log
 res.txt
 
+# Local planning and ad hoc test clients
+/agent_implementation_plan.md
+/agent_schema.md
+/taxonomy_mini_loop_plan.md
+/test_client.ipynb
+/test_script.py
+
 # Config - Keep requirements files but not .env
 .env
 *.local.yaml
