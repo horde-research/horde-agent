@@ -20,7 +20,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from tools.base_tool import BaseTool
+from tools.collect_data.image_search import collect_images_from_serper
 from tools.collect_data.images import collect_images
+from tools.generate_taxonomy.image_taxonomy import flatten_image_query_specs
 
 try:
     from datasets import Dataset
@@ -81,6 +83,10 @@ class CollectDataTool(BaseTool):
         image_min_width: int = int(config.get("image_min_width", 300))
         image_min_height: int = int(config.get("image_min_height", 300))
         image_context_size: int = int(config.get("image_context_size", 500))
+        image_collection_mode = str(config.get("image_collection_mode", "serper")).strip().lower()
+        image_search_results_per_query = int(
+            config.get("image_search_results_per_query", results_per_query)
+        )
 
         raw = asyncio.run(
             _search_and_scrape(
@@ -107,23 +113,41 @@ class CollectDataTool(BaseTool):
 
         images_meta: Dict[str, Any] = {}
         if do_images:
-            scraped_urls = [
-                page["url"]
-                for pages in raw.values()
-                for page in pages
-                if page.get("url")
-            ]
             images_dir = run_dir / "images"
-            image_records = asyncio.run(
-                collect_images(
-                    scraped_urls,
-                    images_dir,
-                    concurrency=concurrency,
-                    context_size=image_context_size,
-                    min_width=image_min_width,
-                    min_height=image_min_height,
+            if image_collection_mode in {"serper", "serper_images", "image_search"}:
+                image_query_specs = _resolve_image_query_specs(config, list(queries))
+                image_records = asyncio.run(
+                    collect_images_from_serper(
+                        image_query_specs,
+                        images_dir,
+                        serper_key=serper_key,
+                        results_per_query=image_search_results_per_query,
+                        concurrency=concurrency,
+                        min_width=image_min_width,
+                        min_height=image_min_height,
+                    )
                 )
-            )
+            elif image_collection_mode in {"html", "scraped_html", "page_html"}:
+                scraped_urls = [
+                    page["url"]
+                    for pages in raw.values()
+                    for page in pages
+                    if page.get("url")
+                ]
+                image_records = asyncio.run(
+                    collect_images(
+                        scraped_urls,
+                        images_dir,
+                        concurrency=concurrency,
+                        context_size=image_context_size,
+                        min_width=image_min_width,
+                        min_height=image_min_height,
+                    )
+                )
+            else:
+                raise ValueError(
+                    "config['image_collection_mode'] must be one of: serper, html."
+                )
             images_json = run_dir / "images.json"
             images_json.write_text(
                 json.dumps(image_records, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -132,6 +156,17 @@ class CollectDataTool(BaseTool):
                 "images_dir": str(images_dir),
                 "images_index": str(images_json),
                 "num_images": len(image_records),
+                "image_collection_mode": "serper"
+                if image_collection_mode in {"serper", "serper_images", "image_search"}
+                else "html",
+                "image_search_results_per_query": image_search_results_per_query,
+                "num_image_query_specs": len(image_query_specs)
+                if image_collection_mode in {"serper", "serper_images", "image_search"}
+                else 0,
+                "num_image_taxonomy_slots": _image_taxonomy_slot_count(config.get("image_taxonomy")),
+                "image_taxonomy_schema_version": (config.get("image_taxonomy") or {}).get("schema_version")
+                if isinstance(config.get("image_taxonomy"), dict)
+                else None,
             }
             logger.info("Collected %d images into %s", len(image_records), images_dir)
 
@@ -298,3 +333,28 @@ def _extract_texts(raw: Dict[str, List[Dict[str, str]]]) -> List[str]:
                 seen.add(full)
                 texts.append(full)
     return texts
+
+
+def _resolve_image_query_specs(config: Dict[str, Any], fallback_queries: List[str]) -> List[Any]:
+    explicit_specs = config.get("image_query_specs")
+    if explicit_specs and isinstance(explicit_specs, list):
+        return explicit_specs
+
+    explicit_queries = config.get("image_search_queries")
+    if explicit_queries and isinstance(explicit_queries, list):
+        return explicit_queries
+
+    image_taxonomy = config.get("image_taxonomy")
+    if isinstance(image_taxonomy, dict):
+        specs = flatten_image_query_specs(image_taxonomy)
+        if specs:
+            return specs
+
+    return fallback_queries
+
+
+def _image_taxonomy_slot_count(image_taxonomy: Any) -> int:
+    if not isinstance(image_taxonomy, dict):
+        return 0
+    slots = image_taxonomy.get("slots") or []
+    return len(slots) if isinstance(slots, list) else 0

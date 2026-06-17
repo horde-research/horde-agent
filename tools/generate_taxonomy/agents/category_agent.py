@@ -1,7 +1,8 @@
 """Agent for extracting cultural categories from free text."""
 
+import json
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from core.llm import LLMClient, LLMRequest
 
@@ -140,3 +141,33 @@ class CategoryAgent:
         categories = resp.data.get("categories", [])
         logger.info("Extracted %d categories for '%s'.", len(categories), country_or_culture)
         return categories
+
+    def refine_categories(
+        self,
+        country_or_culture: str,
+        categories: List[Dict[str, str]],
+        quality_report: Dict[str, Any],
+        culture_profile: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        user_message = (
+            "Refine the generated cultural category list before downstream data collection.\n\n"
+            f"Country/Culture: {country_or_culture}\n"
+            f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
+            f"Current categories:\n{json.dumps(categories, ensure_ascii=False, indent=2)}\n\n"
+            f"Quality report:\n{json.dumps(quality_report, ensure_ascii=False, indent=2)}\n\n"
+            "Return a full revised list of categories. Preserve good categories, fix empty or generic "
+            "descriptions, remove duplicates, and add missing cultural dimensions when needed. "
+            "Return only the JSON object with key 'categories'."
+        )
+        request = LLMRequest(
+            request_id="categories_refine",
+            system_prompt=SYSTEM_PROMPT,
+            user_message=user_message,
+        )
+        resp = self.client.generate_json_sync(request)
+        if not resp.success:
+            logger.error("Category refinement failed: %s", resp.error)
+            return categories
+        refined = resp.data.get("categories", [])
+        logger.info("Refined categories from %d to %d.", len(categories), len(refined))
+        return refined or categories

@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
+from core.agentic.langgraph_runtime import LangGraphAgentRuntime
+from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
+from core.agentic.resume import StaticResumeDecisionProvider
+from core.agentic.state_store import PipelineStateStore
+
+
+class FakeObserver:
+    def __init__(self) -> None:
+        self.events = []
+
+    def start_run(self, state: PipelineState) -> None:
+        self.events.append(("start", list(state.completed_stages)))
+
+    def before_action(self, state: PipelineState, request: ActionRequest) -> None:
+        self.events.append(("before", request.action_type.value))
+
+    def after_action(self, state: PipelineState, result: ActionResult) -> None:
+        self.events.append(("after", result.action_type.value))
+
+    def finish_run(self, state: PipelineState) -> None:
+        self.events.append(("finish", state.termination_reason))
+
+
+def _passing_report(stage: ActionType) -> QualityReport:
+    return QualityReport(stage=stage, passed=True, score=1.0)
+
+
+def _executors(call_counts: dict[str, int] | None = None):
+    counts = call_counts if call_counts is not None else {}
+
+    def _executor(stage: ActionType):
+        def _run(state: PipelineState, request: ActionRequest) -> ActionResult:
+            counts[stage.value] = counts.get(stage.value, 0) + 1
+            return ActionResult(
+                action_type=stage,
+                status="success",
+                quality_report=_passing_report(stage),
+                artifacts={stage.value: f"{stage.value}.artifact"},
+            )
+
+        return _run
+
+    return {stage: _executor(stage) for stage in FULL_GRAPH_ACTIONS}
+
+
+def test_langgraph_runtime_runs_full_graph_and_persists_state(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="core.agentic.langgraph_runtime")
+    observer = FakeObserver()
+    runtime = LangGraphAgentRuntime(
+        executors=_executors(),
+        observer=observer,
+        thread_id="test-full-run",
+    )
+
+    final_state = runtime.run(PipelineState(run_dir=str(tmp_path)))
+
+    assert final_state.termination_reason == "full_graph_complete"
+    assert final_state.completed_stages == [stage.value for stage in FULL_GRAPH_ACTIONS]
+    assert (tmp_path / "agent_state.json").exists()
+    assert (tmp_path / "decision_history.jsonl").exists()
+    assert (tmp_path / "quality_history.jsonl").exists()
+    assert (tmp_path / "result_history.jsonl").exists()
+    assert (tmp_path / "config_history.jsonl").exists()
+    assert (tmp_path / "agent_trace.jsonl").exists()
+    assert (tmp_path / "run_summary.json").exists()
+
+    loaded = PipelineStateStore(tmp_path).load()
+    assert loaded.termination_reason == "full_graph_complete"
+    assert loaded.completed_stages == final_state.completed_stages
+    assert observer.events[0][0] == "start"
+    assert observer.events[-1] == ("finish", "full_graph_complete")
+    assert "Agent decision: stage=generate_taxonomy" in caplog.text
+    assert "Agent stage start: stage=generate_taxonomy" in caplog.text
+    assert "Agent stage result: stage=generate_taxonomy" in caplog.text
+    assert "Agent: next I will run 'generate_taxonomy'." in caplog.text
+    assert "Agent: doing 'generate_taxonomy' now." in caplog.text
+    assert "Agent: 'generate_taxonomy' is done." in caplog.text
+
+
+def test_langgraph_runtime_resume_requires_confirmation_without_provider(tmp_path: Path) -> None:
+    state = PipelineState(run_dir=str(tmp_path))
+    state.mark_stage_complete(
+        ActionType.GENERATE_TAXONOMY,
+        quality_report=_passing_report(ActionType.GENERATE_TAXONOMY),
+        artifacts={"search_queries": ["q1"]},
+    )
+    PipelineStateStore(tmp_path).save(state)
+    call_counts: dict[str, int] = {}
+    runtime = LangGraphAgentRuntime(
+        executors=_executors(call_counts),
+        observer=FakeObserver(),
+        thread_id="test-resume-required",
+    )
+
+    final_state = runtime.resume(tmp_path)
+
+    assert final_state.termination_reason == "resume_confirmation_required"
+    assert final_state.blockers == ["resume_confirmation_required:generate_taxonomy"]
+    assert call_counts == {}
+
+
+def test_langgraph_runtime_confirmed_resume_skips_completed_stage(tmp_path: Path) -> None:
+    state = PipelineState(run_dir=str(tmp_path))
+    state.mark_stage_complete(
+        ActionType.GENERATE_TAXONOMY,
+        quality_report=_passing_report(ActionType.GENERATE_TAXONOMY),
+        artifacts={"search_queries": ["q1"]},
+    )
+    PipelineStateStore(tmp_path).save(state)
+    call_counts: dict[str, int] = {}
+    runtime = LangGraphAgentRuntime(
+        executors=_executors(call_counts),
+        observer=FakeObserver(),
+        resume_decision_provider=StaticResumeDecisionProvider(confirm_all=True),
+        thread_id="test-confirmed-resume",
+    )
+
+    final_state = runtime.resume(tmp_path)
+
+    assert final_state.termination_reason == "full_graph_complete"
+    assert final_state.resume_confirmations["generate_taxonomy"] is True
+    assert call_counts.get("generate_taxonomy") is None
+    assert call_counts["collect_data"] == 1
+    assert final_state.completed_stages == [stage.value for stage in FULL_GRAPH_ACTIONS]
+
+
+def test_langgraph_runtime_logs_collect_data_recovery_iteration(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="core.agentic.langgraph_runtime")
+    call_counts: dict[str, int] = {}
+
+    def _executor(stage: ActionType):
+        def _run(state: PipelineState, request: ActionRequest) -> ActionResult:
+            call_counts[stage.value] = call_counts.get(stage.value, 0) + 1
+            if stage == ActionType.COLLECT_DATA and call_counts[stage.value] == 1:
+                return ActionResult(
+                    action_type=stage,
+                    status="failed",
+                    quality_report=QualityReport(
+                        stage=stage,
+                        passed=False,
+                        recoverable=True,
+                        blocking_issues=["num_samples_below_minimum"],
+                    ),
+                )
+            return ActionResult(
+                action_type=stage,
+                status="success",
+                quality_report=_passing_report(stage),
+                artifacts={stage.value: f"{stage.value}.artifact"},
+            )
+
+        return _run
+
+    runtime = LangGraphAgentRuntime(
+        executors={stage: _executor(stage) for stage in FULL_GRAPH_ACTIONS},
+        observer=FakeObserver(),
+        thread_id="test-collect-recovery-logs",
+    )
+
+    final_state = runtime.run(
+        PipelineState(
+            run_dir=str(tmp_path),
+            config={"serper_results_per_query": 1, "serper_top_results": 1, "max_queries": 1},
+        )
+    )
+
+    assert final_state.termination_reason == "full_graph_complete"
+    assert call_counts["collect_data"] == 2
+    assert final_state.config["serper_results_per_query"] == 6
+    assert "Agent recovery iteration: stage=collect_data attempt=1" in caplog.text
+    assert "recovery_expand_collection_coverage" in caplog.text

@@ -5,7 +5,7 @@ Copied from `agentic_train_pipeline/types.py` and adjusted for new package layou
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DatasetSummary(BaseModel):
@@ -15,6 +15,7 @@ class DatasetSummary(BaseModel):
     resolved_data_id: str
     columns: List[str]
     sample_count: int
+    split_counts: Dict[str, int] = Field(default_factory=dict)
     example: Dict[str, Any]
     modality_candidates: List[str]
     validation_warnings: List[str]
@@ -57,4 +58,3 @@ class FailureClusterPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     clusters: List[Dict[str, Any]]
-

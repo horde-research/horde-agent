@@ -6,7 +6,7 @@ Copied from `agentic_train_pipeline/models/hf_loader.py` and adjusted for new pa
 from typing import Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
 
 
 def _accelerator_kind() -> str:
@@ -63,16 +63,51 @@ def load_hf_causal_lm(model_id: str) -> Tuple[AutoModelForCausalLM, AutoTokenize
     return model, tokenizer
 
 
+def load_hf_image_text_model(model_id: str):
+    """Load a Hugging Face vision-language model for image-to-text SFT."""
+    processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
+
+    kind = _accelerator_kind()
+    torch_dtype = _dtype_for_accelerator(kind)
+
+    if kind == "mps":
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            torch_dtype=torch.float32,
+            device_map=None,
+            use_safetensors=True,
+        )
+        model = model.to("mps")
+    elif kind == "cuda":
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            use_safetensors=True,
+        )
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+            device_map=None,
+            use_safetensors=True,
+        )
+
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None:
+        if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        if getattr(model.config, "pad_token_id", None) is None and getattr(tokenizer, "pad_token_id", None) is not None:
+            model.config.pad_token_id = tokenizer.pad_token_id
+    return model, processor
+
+
 def load_hf_vision_placeholder(model_id: str):
-    raise NotImplementedError(
-        "Image model loading is not implemented yet. "
-        "Provide a text dataset and use a causal LM."
-    )
+    return load_hf_image_text_model(model_id)
 
 
 def load_hf_multimodal_placeholder(model_id: str):
     raise NotImplementedError(
-        "Multimodal model loading is not implemented yet. "
-        "Provide a text dataset and use a causal LM."
+        "Multimodal training is not implemented yet. "
+        "Use TRAINING_MODALITY=image for single-image vision-language SFT."
     )
-

@@ -1,9 +1,36 @@
 from typing import Optional
 
 
+def _prompt_preset_instructions(prompt_preset: str, *, mode: str) -> str:
+    preset = (prompt_preset or "default").strip().lower()
+    if preset == "schema_strict":
+        return (
+            "\nRECOVERY PRESET — SCHEMA STRICT:\n"
+            "- Prioritize valid JSON over verbosity.\n"
+            "- Use exactly the requested keys and value types.\n"
+            "- Avoid extra commentary, markdown fences, trailing notes, or alternative schemas.\n"
+            "- If uncertain about content, keep the value conservative but schema-valid.\n"
+        )
+    if mode == "image" and preset == "ocr_heavy":
+        return (
+            "\nRECOVERY PRESET — OCR HEAVY:\n"
+            "- Pay special attention to readable signs, labels, captions, logos, and maps.\n"
+            "- Transcribe only text that is directly legible.\n"
+            "- Do not infer missing letters or translate unless explicitly requested by the field.\n"
+        )
+    if mode == "text" and preset == "culture_grounded":
+        return (
+            "\nRECOVERY PRESET — CULTURE GROUNDED:\n"
+            "- Prefer specific named entities, customs, places, dates, and practices from the source.\n"
+            "- Avoid generic cultural summaries that could apply to many countries.\n"
+        )
+    return ""
+
+
 def build_image_prompt(
     target_language: str = "English",
     topic_hint: Optional[str] = None,
+    prompt_preset: str = "default",
 ) -> str:
     topic_line = ""
     if topic_hint:
@@ -13,6 +40,7 @@ def build_image_prompt(
             "If the image does not match the topic, ignore it entirely — describe only "
             "what you actually see."
         )
+    preset_line = _prompt_preset_instructions(prompt_preset, mode="image")
 
     return f"""You are a world-class AI training-data engineer. Your sole purpose is to
 produce supervised fine-tuning (SFT) examples that will teach a vision-language
@@ -20,6 +48,8 @@ model to perceive, reason about, and describe visual content with expert-level
 accuracy.{topic_line}
 
 Target language for ALL generated text: {target_language}
+Prompt preset: {prompt_preset}
+{preset_line}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ABSOLUTE RULES  (violating any of these makes the example harmful for training)
@@ -187,7 +217,8 @@ Every text field must be in {target_language}.
 }}"""
 
 
-def build_text_prompt(target_language: str = "English") -> str:
+def build_text_prompt(target_language: str = "English", prompt_preset: str = "default") -> str:
+    preset_line = _prompt_preset_instructions(prompt_preset, mode="text")
     return f"""You are a world-class AI training-data engineer. You will receive a
 SOURCE TEXT that contains factual information about a topic, culture, or domain.
 
@@ -211,6 +242,8 @@ Think of it this way: you are DISTILLING knowledge from the source INTO
 training pairs that will TEACH a model this knowledge permanently.
 
 Target language for ALL generated text: {target_language}
+Prompt preset: {prompt_preset}
+{preset_line}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ABSOLUTE RULES

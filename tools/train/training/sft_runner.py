@@ -19,12 +19,15 @@ def run_sft_iteration(
     trainer_cls,
     train_config: TrainConfig,
     out_dir: str,
+    eval_dataset=None,
     eval_ratio: float = 0.05,
 ) -> Tuple[str, Dict[str, str]]:
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
 
-    if len(dataset) > 10:
+    if eval_dataset is not None:
+        train_dataset = dataset
+    elif len(dataset) > 10:
         split = dataset.train_test_split(test_size=eval_ratio, seed=train_config.seed)
         train_dataset = split["train"]
         eval_dataset = split["test"]
@@ -44,10 +47,11 @@ def run_sft_iteration(
 
     adapter_dir = str(out_dir_path / "adapters")
     save_lora_adapters(model, adapter_dir)
+    if hasattr(tokenizer, "save_pretrained"):
+        tokenizer.save_pretrained(adapter_dir)
 
     log_paths = {
         "train_log": str(out_dir_path / "logs" / "train.log"),
         "metrics": str(out_dir_path / "logs" / "metrics.jsonl"),
     }
     return adapter_dir, log_paths
-

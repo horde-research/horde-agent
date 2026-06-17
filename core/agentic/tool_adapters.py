@@ -1,0 +1,733 @@
+"""Adapters that normalize existing pipeline tools into agentic ActionResult objects."""
+
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any, Callable, Dict
+
+from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
+from core.agentic.coverage import assess_coverage_and_refine_queries
+from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
+from core.agentic.validators import (
+    validate_collection_output,
+    validate_dataset_output,
+    validate_eval_output,
+    validate_report_output,
+    validate_sft_output,
+    validate_taxonomy_output,
+    validate_training_output,
+)
+
+StageExecutor = Callable[[PipelineState, ActionRequest], ActionResult]
+
+
+class AgenticToolAdapter:
+    """Wrap repo tools behind stable agentic stage contracts."""
+
+    def __init__(self, tools: Mapping[str, Any]) -> None:
+        self.tools = dict(tools)
+
+    def executors(self) -> Dict[ActionType, StageExecutor]:
+        return {
+            ActionType.GENERATE_TAXONOMY: self.execute_generate_taxonomy,
+            ActionType.COLLECT_DATA: self.execute_collect_data,
+            ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES: self.execute_assess_coverage_and_refine_queries,
+            ActionType.BUILD_SFT_DATASET: self.execute_build_sft_dataset,
+            ActionType.BUILD_DATASET: self.execute_build_dataset,
+            ActionType.TRAIN_MODEL: self.execute_train_model,
+            ActionType.EVALUATE_MODEL: self.execute_evaluate_model,
+            ActionType.GENERATE_REPORT: self.execute_generate_report,
+        }
+
+    def missing_tools(self) -> list[ActionType]:
+        required = {
+            ActionType.GENERATE_TAXONOMY: "generate_taxonomy",
+            ActionType.COLLECT_DATA: "collect_data",
+            ActionType.BUILD_SFT_DATASET: "build_sft_dataset",
+            ActionType.BUILD_DATASET: "build_dataset",
+            ActionType.TRAIN_MODEL: "train",
+            ActionType.EVALUATE_MODEL: "eval_model",
+            ActionType.GENERATE_REPORT: "reporting",
+        }
+        return [stage for stage, key in required.items() if key not in self.tools]
+
+    def execute_generate_taxonomy(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            country = str(cfg.get("country") or "").strip()
+            if not country:
+                raise ValueError("state.config['country'] is required.")
+            output = self.tools["generate_taxonomy"].execute(
+                country,
+                {
+                    "batch_size": cfg.get("llm_batch_size", 5),
+                    "batch_delay": cfg.get("llm_batch_delay", 1.5),
+                    "provider": cfg.get("llm_provider"),
+                    "model": cfg.get("llm_model"),
+                    "api_key": cfg.get("llm_api_key"),
+                    "temperature": cfg.get("llm_temperature", 0.2),
+                    "enable_image_taxonomy": cfg.get("enable_image_taxonomy", True),
+                    "image_taxonomy_queries_per_slot": cfg.get("image_taxonomy_queries_per_slot", 4),
+                    "image_taxonomy_max_slots": cfg.get("image_taxonomy_max_slots"),
+                },
+            )
+            selected_queries = _select_queries(
+                output,
+                max_queries_per_category=cfg.get("max_queries_per_category"),
+                max_queries=cfg.get("max_queries"),
+            )
+            report = validate_taxonomy_output(output)
+            return ActionResult(
+                action_type=ActionType.GENERATE_TAXONOMY,
+                status=_status_from_report(report),
+                artifacts={
+                    "taxonomy": output,
+                    "search_queries": selected_queries,
+                    "image_taxonomy": output.get("image_taxonomy"),
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.GENERATE_TAXONOMY, exc)
+
+    def execute_collect_data(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            queries = state.artifacts.get("search_queries") or cfg.get("queries")
+            if not queries:
+                raise ValueError("search_queries artifact is required before collection.")
+            query_list = _merge_queries(list(queries), cfg.get("coverage_added_queries"))
+            collect_images = bool(cfg.get("collect_images", False))
+            output = self.tools["collect_data"].execute(
+                {
+                    "queries": query_list,
+                    "run_dir": str(Path(state.run_dir) / "collect"),
+                    "google_results_per_query": cfg.get("serper_results_per_query", 10),
+                    "top_results": cfg.get("serper_top_results", 5),
+                    "concurrency": cfg.get("serper_concurrency", 50),
+                    "collect_images": collect_images,
+                    "image_min_width": cfg.get("image_min_width", 300),
+                    "image_min_height": cfg.get("image_min_height", 300),
+                    "image_context_size": cfg.get("image_context_size", 500),
+                    "image_collection_mode": cfg.get("image_collection_mode", "serper"),
+                    "image_search_results_per_query": cfg.get(
+                        "image_search_results_per_query",
+                        cfg.get("serper_results_per_query", 10),
+                    ),
+                    "image_taxonomy": state.artifacts.get("image_taxonomy") or cfg.get("image_taxonomy"),
+                    "image_query_specs": cfg.get("image_query_specs"),
+                    "image_search_queries": cfg.get("image_search_queries"),
+                }
+            )
+            report = validate_collection_output(output, collect_images=collect_images)
+            metadata = output.get("metadata") or {}
+            artifacts = {
+                "raw_data_path": output.get("data_path"),
+                "data_path": output.get("data_path"),
+                "num_samples": output.get("num_samples"),
+                "collection_metadata": metadata,
+            }
+            for key in ("images_dir", "images_index", "num_images"):
+                if key in metadata:
+                    artifacts[key] = metadata[key]
+            return ActionResult(
+                action_type=ActionType.COLLECT_DATA,
+                status=_status_from_report(report),
+                artifacts=artifacts,
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.COLLECT_DATA, exc)
+
+    def execute_assess_coverage_and_refine_queries(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            output = assess_coverage_and_refine_queries(state)
+            report = output["report"]
+            return ActionResult(
+                action_type=ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES,
+                status=_status_from_report(report),
+                artifacts={
+                    "coverage_review": output["coverage_review"],
+                    "coverage_added_queries": output["coverage_added_queries"],
+                    "image_query_specs": output["image_query_specs"],
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output["coverage_review"],
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES, exc)
+
+    def execute_build_sft_dataset(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            mode = _training_modality(cfg)
+            sft_dir = Path(state.run_dir) / "sft"
+            sft_dir.mkdir(parents=True, exist_ok=True)
+            tool_config = {
+                "mode": mode,
+                "output_annotations": str(sft_dir / "annotations.jsonl"),
+                "output_sft": str(sft_dir / "sft.jsonl"),
+                "target_language": cfg.get("sft_target_language", "English"),
+                "batch_size": cfg.get("llm_batch_size", 5),
+                "batch_delay": cfg.get("llm_batch_delay", 1.0),
+                "provider": cfg.get("llm_provider"),
+                "model": cfg.get("llm_model"),
+                "api_key": cfg.get("llm_api_key"),
+                "prompt_preset": cfg.get("sft_prompt_preset", "default"),
+            }
+            if mode == "image":
+                images_dir = state.artifacts.get("images_dir") or cfg.get("input_dir")
+                if not images_dir:
+                    raise ValueError("images_dir artifact is required for image SFT mode.")
+                tool_config["input_dir"] = str(images_dir)
+                image_manifest = state.artifacts.get("images_index") or cfg.get("image_manifest")
+                if image_manifest:
+                    tool_config["image_manifest"] = str(image_manifest)
+                tool_config["image_exts"] = cfg.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
+            else:
+                input_jsonl = state.artifacts.get("collected_texts_jsonl")
+                if not input_jsonl:
+                    data_path = state.artifacts.get("data_path") or cfg.get("data_path")
+                    if not data_path:
+                        raise ValueError("data_path artifact is required for text SFT mode.")
+                    input_jsonl = str(sft_dir / "collected_texts.jsonl")
+                    _export_hf_dataset_to_jsonl(str(data_path), input_jsonl)
+                tool_config["input_jsonl"] = str(input_jsonl)
+                tool_config["text_field"] = cfg.get("sft_text_field", "text")
+
+            output = self.tools["build_sft_dataset"].execute(tool_config)
+            report = validate_sft_output(output)
+            return ActionResult(
+                action_type=ActionType.BUILD_SFT_DATASET,
+                status=_status_from_report(report),
+                artifacts={
+                    "sft_mode": output.get("mode"),
+                    "training_modality": output.get("mode"),
+                    "sft_path": output.get("sft_path"),
+                    "annotations_path": output.get("annotations_path"),
+                    "num_sft_examples": output.get("num_examples"),
+                    "sft_prompt_preset": output.get("prompt_preset"),
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.BUILD_SFT_DATASET, exc)
+
+    def execute_build_dataset(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            data_path = state.artifacts.get("sft_path") or cfg.get("data_path")
+            if not data_path:
+                raise ValueError("sft_path artifact or config data_path is required.")
+            output = self.tools["build_dataset"].execute(
+                str(data_path),
+                {
+                    "run_dir": state.run_dir,
+                    "validation_ratio": cfg.get("dataset_val_ratio", 0.1),
+                    "eval_split": cfg.get("eval_split", "validation"),
+                    "seed": cfg.get("seed", 42),
+                },
+            )
+            report = validate_dataset_output(output)
+            return ActionResult(
+                action_type=ActionType.BUILD_DATASET,
+                status=_status_from_report(report),
+                artifacts={
+                    "dataset_ref": output.get("dataset_ref"),
+                    "dataset_summary": output.get("dataset_summary"),
+                    "dataset_manifest_path": output.get("dataset_manifest_path"),
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.BUILD_DATASET, exc)
+
+    def execute_train_model(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            dataset_ref = state.artifacts.get("dataset_ref")
+            if not dataset_ref:
+                raise ValueError("dataset_ref artifact is required before training.")
+            iter_idx = int(state.retry_counts.get(ActionType.TRAIN_MODEL.value, 0))
+            train_config = _train_config_dict(cfg)
+            training_modality = _training_modality(cfg)
+            if _as_bool(cfg.get("debug_stub_train", False)):
+                output = _debug_train_output(
+                    run_dir=state.run_dir,
+                    iter_idx=iter_idx,
+                    train_config=train_config,
+                    dataset_ref=dataset_ref,
+                    training_modality=training_modality,
+                )
+            else:
+                output = self.tools["train"].execute(
+                    dataset_ref,
+                    {
+                        "method": "sft",
+                        "run_dir": state.run_dir,
+                        "iter_idx": iter_idx,
+                        "hf_model_id": cfg.get("hf_model_id"),
+                        "trainer_key": cfg.get("trainer_key", "static_sft_default"),
+                        "lora_preset_key": cfg.get("lora_preset_key", "lora_attn_small"),
+                        "model_loader_key": cfg.get("model_loader_key", "hf_causal_lm_default"),
+                        "train_config": train_config,
+                        "max_samples": cfg.get("max_samples"),
+                        "training_modality": training_modality,
+                    },
+                )
+            report = validate_training_output(output)
+            return ActionResult(
+                action_type=ActionType.TRAIN_MODEL,
+                status=_status_from_report(report),
+                artifacts={
+                    "adapter_path": output.get("adapter_path"),
+                    "train_log_paths": output.get("log_paths"),
+                    "train_metrics": output.get("metrics"),
+                    "iterations": [output.get("iteration_record")] if output.get("iteration_record") else [],
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.TRAIN_MODEL, exc)
+
+    def execute_evaluate_model(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            adapter_path = state.artifacts.get("adapter_path")
+            dataset_ref = state.artifacts.get("dataset_ref") or {}
+            data_path = dataset_ref.get("data_path") or state.artifacts.get("sft_path") or cfg.get("data_path")
+            eval_split = dataset_ref.get("eval_split") or cfg.get("eval_split", "validation")
+            if not adapter_path:
+                raise ValueError("adapter_path artifact is required before evaluation.")
+            if not data_path:
+                raise ValueError("dataset data_path is required before evaluation.")
+            eval_config = {
+                "run_dir": state.run_dir,
+                "hf_model_id": cfg.get("hf_model_id"),
+                "split": eval_split,
+                "max_samples": cfg.get("eval_max_samples", 64),
+                "max_new_tokens": cfg.get("eval_max_new_tokens", 128),
+                "training_modality": _training_modality(cfg),
+                "train_log_paths": state.artifacts.get("train_log_paths"),
+                "max_steps": cfg.get("max_steps"),
+                "eval_enable_llm_judge": cfg.get("eval_enable_llm_judge", False),
+                "eval_judge_max_samples": cfg.get("eval_judge_max_samples", 32),
+                "eval_judge_batch_size": cfg.get("eval_judge_batch_size", 3),
+                "eval_judge_batch_delay": cfg.get("eval_judge_batch_delay", 1.0),
+                "target_language": cfg.get("sft_target_language"),
+                "llm_provider": cfg.get("llm_provider"),
+                "llm_model": cfg.get("llm_model"),
+                "llm_api_key": cfg.get("llm_api_key"),
+                "llm_batch_size": cfg.get("llm_batch_size"),
+                "llm_batch_delay": cfg.get("llm_batch_delay"),
+            }
+            if _as_bool(cfg.get("debug_stub_eval", False)):
+                output = _debug_eval_output(
+                    run_dir=state.run_dir,
+                    data_path=str(data_path),
+                    split=str(eval_split),
+                    max_samples=int(eval_config["max_samples"] or 64),
+                    failure_rate=float(cfg.get("debug_eval_failure_rate") or 0.0),
+                )
+            else:
+                output = self.tools["eval_model"].execute(
+                    str(adapter_path),
+                    str(data_path),
+                    eval_config,
+                )
+            report = validate_eval_output(output)
+            return ActionResult(
+                action_type=ActionType.EVALUATE_MODEL,
+                status=_status_from_report(report),
+                artifacts={
+                    "predictions_path": output.get("predictions_path"),
+                    "failures_path": output.get("failures_path"),
+                    "cluster_preview": output.get("cluster_preview"),
+                    "eval_metrics_path": output.get("eval_metrics_path"),
+                    "eval_metrics": output.get("metrics"),
+                    "training_health": output.get("training_health"),
+                    "judge_summary": output.get("judge_summary"),
+                },
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.EVALUATE_MODEL, exc)
+
+    def execute_generate_report(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            component_selection = {
+                "dataset_loader_key": cfg.get("dataset_loader_key", f"hf_{_training_modality(cfg)}_default"),
+                "model_loader_key": cfg.get("model_loader_key", "hf_causal_lm_default"),
+                "lora_preset_key": cfg.get("lora_preset_key", "lora_attn_small"),
+                "trainer_key": cfg.get("trainer_key", "static_sft_default"),
+                "hf_model_id": cfg.get("hf_model_id"),
+                "primary_metric": cfg.get("primary_metric", "eval_loss"),
+                "rationale": "agentic full mode selection",
+            }
+            report_path = self.tools["reporting"].finalize(
+                {
+                    "dataset_summary": state.artifacts.get("dataset_summary") or {},
+                    "component_selection": component_selection,
+                    "iterations": state.artifacts.get("iterations") or [],
+                    "failures_path": state.artifacts.get("failures_path") or "",
+                    "cluster_preview": state.artifacts.get("cluster_preview") or {},
+                    "error_analysis": {
+                        "taxonomy": state.artifacts.get("taxonomy"),
+                        "collection": state.artifacts.get("collection_metadata"),
+                        "sft_generation": {
+                            "sft_path": state.artifacts.get("sft_path"),
+                            "num_sft_examples": state.artifacts.get("num_sft_examples"),
+                        },
+                    },
+                }
+            )
+            output = {"report_path": report_path}
+            report = validate_report_output(output)
+            return ActionResult(
+                action_type=ActionType.GENERATE_REPORT,
+                status=_status_from_report(report),
+                artifacts=output,
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.GENERATE_REPORT, exc)
+
+
+def _failed_result(stage: ActionType, exc: Exception) -> ActionResult:
+    return ActionResult(
+        action_type=stage,
+        status="failed",
+        quality_report=QualityReport(
+            stage=stage,
+            passed=False,
+            recoverable=_is_recoverable_exception(exc),
+            blocking_issues=[f"{type(exc).__name__}:{exc}"],
+        ),
+        error=str(exc),
+    )
+
+
+def _is_recoverable_exception(exc: Exception) -> bool:
+    return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _status_from_report(report: QualityReport) -> str:
+    return "success" if report.passed else "failed"
+
+
+def _flatten_queries(output: Dict[str, Any]) -> list[str]:
+    nested = output.get("category_subcategory_queries") or {}
+    queries: list[str] = []
+    for subcategories in nested.values():
+        if not isinstance(subcategories, dict):
+            continue
+        for query_list in subcategories.values():
+            if isinstance(query_list, Iterable) and not isinstance(query_list, (str, bytes)):
+                queries.extend(str(query).strip() for query in query_list if str(query).strip())
+    return queries
+
+
+def _limit_queries(queries: list[str], max_queries: Any) -> list[str]:
+    if max_queries is None:
+        return queries
+    max_queries_int = int(max_queries)
+    if max_queries_int <= 0:
+        return queries
+    return queries[:max_queries_int]
+
+
+def _merge_queries(base_queries: list[str], added_queries: Any) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for query in [*base_queries, *_strings_from_any(added_queries)]:
+        normalized = str(query).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged
+
+
+def _strings_from_any(value: Any) -> list[str]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _select_queries(
+    output: Dict[str, Any],
+    *,
+    max_queries_per_category: Any,
+    max_queries: Any,
+) -> list[str]:
+    per_category = _optional_positive_int(max_queries_per_category)
+    if per_category is None:
+        return _limit_queries(_flatten_queries(output), max_queries)
+
+    nested = output.get("category_subcategory_queries") or {}
+    queries: list[str] = []
+    for subcategories in nested.values():
+        if not isinstance(subcategories, dict):
+            continue
+        category_queries: list[str] = []
+        for query_list in subcategories.values():
+            if isinstance(query_list, Iterable) and not isinstance(query_list, (str, bytes)):
+                category_queries.extend(str(query).strip() for query in query_list if str(query).strip())
+        queries.extend(category_queries[:per_category])
+    return _limit_queries(queries, max_queries)
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
+    from datasets import load_from_disk
+
+    dataset = load_from_disk(hf_dataset_path)
+    with open(jsonl_path, "w", encoding="utf-8") as handle:
+        for row in dataset:
+            handle.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
+
+
+def _train_config_dict(config: Mapping[str, Any]) -> Dict[str, Any]:
+    explicit = config.get("train_config")
+    if isinstance(explicit, dict):
+        return explicit
+    return {
+        "lr": config.get("train_lr", 2e-4),
+        "batch_size": config.get("train_batch_size", 4),
+        "grad_accum": config.get("train_grad_accum", 4),
+        "max_steps": config.get("max_steps", 200),
+        "warmup_ratio": config.get("train_warmup_ratio", 0.03),
+        "weight_decay": config.get("train_weight_decay", 0.0),
+        "max_seq_len": config.get("train_max_seq_len", 512),
+        "eval_steps": config.get("train_eval_steps", 50),
+        "seed": config.get("seed", 42),
+    }
+
+
+def _training_modality(config: Mapping[str, Any]) -> str:
+    return str(config.get("training_modality") or config.get("sft_mode") or "text").strip().lower()
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _debug_train_output(
+    *,
+    run_dir: str,
+    iter_idx: int,
+    train_config: Mapping[str, Any],
+    dataset_ref: Mapping[str, Any],
+    training_modality: str,
+) -> Dict[str, Any]:
+    run_path = Path(run_dir)
+    adapter_dir = run_path / "debug_stub" / "adapter" / f"iter_{iter_idx}"
+    log_dir = run_path / "debug_stub" / "logs"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics = {
+        "steps": int(train_config.get("max_steps") or 0),
+        "best_eval_loss": 0.0,
+        "last_train_loss": 0.0,
+        "last_eval_loss": 0.0,
+    }
+    train_log = log_dir / f"train_iter_{iter_idx}.log"
+    metrics_path = log_dir / f"metrics_iter_{iter_idx}.jsonl"
+    adapter_config = adapter_dir / "adapter_config.json"
+    train_log.write_text(
+        (
+            f"debug_stub_train=true iter_idx={iter_idx} "
+            f"training_modality={training_modality} dataset={dataset_ref.get('data_path', '')}\n"
+        ),
+        encoding="utf-8",
+    )
+    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False) + "\n", encoding="utf-8")
+    adapter_config.write_text(
+        json.dumps(
+            {
+                "debug_stub": True,
+                "created_at": int(time.time()),
+                "training_modality": training_modality,
+                "dataset_ref": dict(dataset_ref),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = dict(train_config)
+    iteration_record = {
+        "iter_idx": iter_idx,
+        "config": config,
+        "metrics": metrics,
+        "adapter_path": str(adapter_dir),
+        "log_paths": {"train_log": str(train_log), "metrics": str(metrics_path)},
+    }
+    return {
+        "adapter_path": str(adapter_dir),
+        "log_paths": iteration_record["log_paths"],
+        "metrics": metrics,
+        "iteration_record": iteration_record,
+        "training_modality": training_modality,
+        "debug_stub": True,
+    }
+
+
+def _debug_eval_output(
+    *,
+    run_dir: str,
+    data_path: str,
+    split: str,
+    max_samples: int,
+    failure_rate: float,
+) -> Dict[str, Any]:
+    eval_dir = Path(run_dir) / "debug_stub" / "eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    predictions_path = eval_dir / "predictions.jsonl"
+    failures_path = eval_dir / "failures.jsonl"
+
+    rows = _read_debug_rows(data_path, split=split, max_samples=max_samples)
+    with predictions_path.open("w", encoding="utf-8") as handle:
+        if rows:
+            for idx, row in enumerate(rows):
+                handle.write(
+                    json.dumps(
+                        {
+                            "id": idx,
+                            "input": _preview_text(row),
+                            "prediction": "debug_stub_prediction",
+                            "reference": "debug_stub_prediction",
+                            "passed": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        else:
+            handle.write(
+                json.dumps(
+                    {
+                        "id": 0,
+                        "input": "",
+                        "prediction": "debug_stub_prediction",
+                        "reference": "debug_stub_prediction",
+                        "passed": True,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    failure_count = 0
+    if failure_rate > 0:
+        failure_count = max(1, int(round(max(1, len(rows)) * failure_rate)))
+    with failures_path.open("w", encoding="utf-8") as handle:
+        for idx in range(failure_count):
+            handle.write(
+                json.dumps(
+                    {
+                        "id": idx,
+                        "reason": "debug_stub_failure",
+                        "label": "debug_stub",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    clusters = []
+    if failure_count:
+        clusters.append({"label": "debug_stub", "count": failure_count, "examples": []})
+    return {
+        "predictions_path": str(predictions_path),
+        "failures_path": str(failures_path),
+        "cluster_preview": {"clusters": clusters},
+        "metrics": {"failure_rate": failure_rate, "num_predictions": max(1, len(rows))},
+        "debug_stub": True,
+    }
+
+
+def _read_debug_rows(data_path: str, *, split: str, max_samples: int) -> list[Dict[str, Any]]:
+    path = Path(data_path)
+    rows: list[Dict[str, Any]] = []
+    limit = max(1, max_samples)
+    if path.exists() and path.is_dir():
+        try:
+            from core.data.hf_dataset import load_dataset_from_path
+
+            dataset, _ = load_dataset_from_path(str(path), split=split)
+            for row in dataset.select(range(min(len(dataset), limit))):
+                rows.append(dict(row))
+            return rows
+        except Exception:
+            return []
+    if not path.exists() or not path.is_file():
+        return []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if len(rows) >= limit:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                parsed = {"text": line}
+            rows.append(parsed if isinstance(parsed, dict) else {"value": parsed})
+    return rows
+
+
+def _preview_text(row: Mapping[str, Any]) -> str:
+    messages = row.get("messages")
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        if isinstance(first, Mapping):
+            return str(first.get("content") or "")[:500]
+    for key in ("text", "prompt", "instruction", "input", "query"):
+        if row.get(key):
+            return str(row[key])[:500]
+    return json.dumps(dict(row), ensure_ascii=False)[:500]
+
+
+def full_graph_executors(tools: Mapping[str, Any]) -> Dict[ActionType, StageExecutor]:
+    adapter = AgenticToolAdapter(tools)
+    return {stage: adapter.executors()[stage] for stage in FULL_GRAPH_ACTIONS}

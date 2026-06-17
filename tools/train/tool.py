@@ -69,6 +69,11 @@ class TrainTool(BaseTool):
         method = (config.get("method") or "sft").lower()
         if method != "sft":
             raise NotImplementedError("Only SFT is implemented in the migrated training stack.")
+        training_modality = str(config.get("training_modality") or config.get("sft_mode") or "text").strip().lower()
+        if training_modality not in {"text", "image"}:
+            raise NotImplementedError(
+                "Only text and single-image vision-language SFT training are implemented."
+            )
 
         run_dir = config.get("run_dir") or config.get("out_dir")
         if not run_dir:
@@ -82,10 +87,12 @@ class TrainTool(BaseTool):
         if isinstance(dataset_paths, dict) and "data_path" in dataset_paths:
             data_path = str(dataset_paths["data_path"])
             split = str(dataset_paths.get("split", "train"))
+            eval_split = dataset_paths.get("eval_split")
         elif isinstance(dataset_paths, dict) and "train_path" in dataset_paths:
             # Legacy workflow: treat train_path as a datasets.load_from_disk path.
             data_path = str(dataset_paths["train_path"])
             split = "train"
+            eval_split = None
         else:
             raise ValueError("TrainTool expects dataset_paths to include 'data_path' (preferred) or 'train_path'.")
 
@@ -97,6 +104,11 @@ class TrainTool(BaseTool):
         trainer_key = config.get("trainer_key", "static_sft_default")
         lora_preset_key = config.get("lora_preset_key", "lora_attn_small")
         model_loader_key = config.get("model_loader_key", "hf_causal_lm_default")
+        if training_modality == "image":
+            if trainer_key == "static_sft_default":
+                trainer_key = "vision_language_sft"
+            if model_loader_key == "hf_causal_lm_default":
+                model_loader_key = "hf_image_text_default"
 
         train_config = TrainConfig.model_validate(config.get("train_config") or {})
         if config.get("max_steps") is not None:
@@ -108,6 +120,9 @@ class TrainTool(BaseTool):
         lora_preset_dict = registry.get_lora_preset(lora_preset_key)
 
         dataset, _ = load_dataset_from_path(data_path, split=split)
+        eval_dataset = None
+        if eval_split and str(eval_split) != split:
+            eval_dataset, _ = load_dataset_from_path(data_path, split=str(eval_split))
         if max_samples is not None:
             max_samples_int = int(max_samples)
             if max_samples_int > 0 and len(dataset) > max_samples_int:
@@ -124,6 +139,7 @@ class TrainTool(BaseTool):
             trainer_cls=trainer_cls,
             train_config=train_config,
             out_dir=str(iter_dir),
+            eval_dataset=eval_dataset,
         )
         metrics = parse_metrics(log_paths["metrics"])
 

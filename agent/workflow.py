@@ -7,21 +7,28 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from config import PipelineConfig
 from core.agentic.agent import Agent, DEFAULT_SEED
-from core.registry.builtins import build_registry
+from core.agentic.action_space import ActionType
+from core.agentic.langgraph_runtime import LangGraphAgentRuntime
+from core.agentic.models import PipelineState
+from core.agentic.resume import ResumeDecisionProvider, StaticResumeDecisionProvider
+from core.agentic.state_store import PipelineStateStore
+from core.agentic.tool_adapters import AgenticToolAdapter
 from core.types.pipeline_types import TrainConfig
-from tools.build_dataset.tool import BuildDatasetTool
-from tools.build_sft_dataset.tool import BuildSftDatasetTool
-from tools.collect_data.tool import CollectDataTool
-from tools.eval_model.tool import EvalModelTool
-from tools.generate_taxonomy.tool import GenerateTaxonomyTool
-from tools.reporting.tool import ReportingTool
-from tools.train.tool import TrainTool
 from tools.train.training.log_parser import read_log_tail
 from tools.train.training.tuning import TuningBounds, apply_adjustments, generate_random_candidates
+
+if TYPE_CHECKING:
+    from tools.build_dataset.tool import BuildDatasetTool
+    from tools.build_sft_dataset.tool import BuildSftDatasetTool
+    from tools.collect_data.tool import CollectDataTool
+    from tools.eval_model.tool import EvalModelTool
+    from tools.generate_taxonomy.tool import GenerateTaxonomyTool
+    from tools.reporting.tool import ReportingTool
+    from tools.train.tool import TrainTool
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +66,86 @@ def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | No
 class WorkflowRunner:
     """Executes a workflow by invoking tools and passing artifacts."""
 
-    def __init__(self, tools: Dict[str, Any], cfg: PipelineConfig) -> None:
+    def __init__(
+        self,
+        tools: Dict[str, Any],
+        cfg: PipelineConfig,
+        agent_observer: Any = None,
+        agent_resume_provider: ResumeDecisionProvider | None = None,
+    ) -> None:
         self.tools = tools
         self.cfg = cfg
+        self.agent_observer = agent_observer
+        self.agent_resume_provider = agent_resume_provider
 
     def run(self) -> Dict[str, Any]:
         mode = self.cfg.mode.lower()
         if mode == "full":
             return self._run_full_pipeline()
+        if mode == "full_agentic":
+            return self._run_full_agentic()
         if mode == "workflow":
             return self._run_workflow()
         if mode in {"minimal_agentic", "agentic"}:
             return self._run_minimal_agentic()
         raise ValueError(f"Unknown mode: {mode}")
+
+    # ── full agentic pipeline ────────────────────────────────────────────────
+
+    def _run_full_agentic(self) -> Dict[str, Any]:
+        adapter = AgenticToolAdapter(self.tools)
+        missing = adapter.missing_tools()
+        if missing:
+            missing_names = ", ".join(stage.value for stage in missing)
+            raise RuntimeError(f"Missing tools for full_agentic mode: {missing_names}")
+
+        current_config = self.cfg.model_dump()
+        state = PipelineState(
+            run_dir=self.cfg.run_dir,
+            mode="full",
+            config=current_config,
+        )
+        resume_provider = self.agent_resume_provider
+        if resume_provider is None and self.cfg.resume_confirm_completed:
+            resume_provider = StaticResumeDecisionProvider(confirm_all=True)
+        runtime = LangGraphAgentRuntime(
+            executors=adapter.executors(),
+            observer=self.agent_observer,
+            resume_decision_provider=resume_provider,
+            thread_id=f"full-agentic:{self.cfg.run_dir}",
+        )
+        store = PipelineStateStore(self.cfg.run_dir)
+        if store.exists():
+            state = store.load()
+            state.config.update(current_config)
+            state.termination_reason = None
+            state.blockers = [
+                blocker for blocker in state.blockers if not blocker.startswith("resume_confirmation_required:")
+            ]
+            restart_stage = self._agentic_restart_stage()
+            if restart_stage:
+                state.clear_stage_and_downstream(restart_stage)
+                state.resume_confirmations.clear()
+                state.decision_history.clear()
+                state.result_history.clear()
+                state.retry_counts.clear()
+            final_state = runtime.run(state)
+        else:
+            final_state = runtime.run(state)
+        result = final_state.to_dict()
+        result["mode"] = "full_agentic"
+        return result
+
+    def _agentic_restart_stage(self) -> ActionType | None:
+        if self.cfg.fresh_run:
+            return ActionType.GENERATE_TAXONOMY
+        if not self.cfg.restart_from_stage:
+            return None
+        try:
+            return ActionType(str(self.cfg.restart_from_stage))
+        except ValueError as exc:
+            valid = ", ".join(action.value for action in ActionType if not action.value.startswith("stop_"))
+            raise ValueError(f"Invalid restart_from_stage '{self.cfg.restart_from_stage}'. Valid stages: {valid}") from exc
 
     # ── full pipeline ─────────────────────────────────────────────────────────
 
@@ -90,6 +164,9 @@ class WorkflowRunner:
         taxonomy_out = generate_taxonomy.execute(cfg.country, {
             "batch_size": cfg.llm_batch_size,
             "batch_delay": cfg.llm_batch_delay,
+            "enable_image_taxonomy": cfg.enable_image_taxonomy,
+            "image_taxonomy_queries_per_slot": cfg.image_taxonomy_queries_per_slot,
+            "image_taxonomy_max_slots": cfg.image_taxonomy_max_slots,
         })
 
         all_queries: List[str] = []
@@ -113,27 +190,53 @@ class WorkflowRunner:
             "google_results_per_query": cfg.serper_results_per_query,
             "top_results": cfg.serper_top_results,
             "concurrency": cfg.serper_concurrency,
+            "collect_images": cfg.collect_images,
+            "image_collection_mode": cfg.image_collection_mode,
+            "image_search_results_per_query": cfg.image_search_results_per_query,
+            "image_min_width": cfg.image_min_width,
+            "image_min_height": cfg.image_min_height,
+            "image_context_size": cfg.image_context_size,
+            "image_taxonomy": taxonomy_out.get("image_taxonomy"),
         })
         raw_data_path = collect_out["data_path"]
         logger.info("Collected %d samples -> %s", collect_out["num_samples"], raw_data_path)
 
         # Step 3 — SFT annotation
-        logger.info("Step 3/7: Building SFT dataset from collected text...")
+        logger.info("Step 3/7: Building SFT dataset from collected data...")
         sft_dir = Path(cfg.run_dir) / "sft"
         sft_dir.mkdir(parents=True, exist_ok=True)
-        collected_jsonl = str(sft_dir / "collected_texts.jsonl")
-        _export_hf_dataset_to_jsonl(raw_data_path, collected_jsonl)
+        if cfg.training_modality == "image":
+            collect_metadata = collect_out.get("metadata", {})
+            images_dir = collect_metadata.get("images_dir")
+            if not images_dir:
+                raise RuntimeError("Image SFT mode requires collected images.")
+            sft_config = {
+                "mode": cfg.training_modality,
+                "input_dir": images_dir,
+                "image_manifest": collect_metadata.get("images_index"),
+                "output_annotations": str(sft_dir / "annotations.jsonl"),
+                "output_sft": str(sft_dir / "sft.jsonl"),
+                "target_language": cfg.sft_target_language,
+                "prompt_preset": cfg.sft_prompt_preset,
+                "batch_size": cfg.llm_batch_size,
+                "batch_delay": cfg.llm_batch_delay,
+            }
+        else:
+            collected_jsonl = str(sft_dir / "collected_texts.jsonl")
+            _export_hf_dataset_to_jsonl(raw_data_path, collected_jsonl)
+            sft_config = {
+                "mode": cfg.training_modality,
+                "input_jsonl": collected_jsonl,
+                "text_field": "text",
+                "output_annotations": str(sft_dir / "annotations.jsonl"),
+                "output_sft": str(sft_dir / "sft.jsonl"),
+                "target_language": cfg.sft_target_language,
+                "prompt_preset": cfg.sft_prompt_preset,
+                "batch_size": cfg.llm_batch_size,
+                "batch_delay": cfg.llm_batch_delay,
+            }
 
-        sft_out = build_sft.execute({
-            "mode": cfg.sft_mode,
-            "input_jsonl": collected_jsonl,
-            "text_field": "text",
-            "output_annotations": str(sft_dir / "annotations.jsonl"),
-            "output_sft": str(sft_dir / "sft.jsonl"),
-            "target_language": cfg.sft_target_language,
-            "batch_size": cfg.llm_batch_size,
-            "batch_delay": cfg.llm_batch_delay,
-        })
+        sft_out = build_sft.execute(sft_config)
         sft_path = sft_out["sft_path"]
         logger.info("Built %d SFT examples -> %s", sft_out["num_examples"], sft_path)
 
@@ -142,7 +245,7 @@ class WorkflowRunner:
 
         # Step 4 — Build HF dataset
         logger.info("Step 4/7: Loading SFT dataset for training...")
-        dataset_out = build_dataset.execute(sft_path, {"run_dir": cfg.run_dir})
+        dataset_out = build_dataset.execute(sft_path, self._dataset_build_config())
 
         # Steps 5-7 — Train, evaluate, report
         result = self._train_eval_report(
@@ -188,7 +291,7 @@ class WorkflowRunner:
         eval_model: EvalModelTool = self.tools["eval_model"]
         reporting: ReportingTool = self.tools["reporting"]
 
-        dataset_out = build_dataset.execute(cfg.data_path, {"run_dir": cfg.run_dir})
+        dataset_out = build_dataset.execute(cfg.data_path, self._dataset_build_config())
 
         result = self._train_eval_report(
             dataset_out=dataset_out,
@@ -221,7 +324,9 @@ class WorkflowRunner:
         cfg = self.cfg
         train_config = TrainConfig(**cfg.train_config_dict())
 
-        data_path = dataset_out["dataset_ref"]["data_path"]
+        dataset_ref = dataset_out["dataset_ref"]
+        data_path = dataset_ref["data_path"]
+        eval_split = dataset_ref.get("eval_split") or cfg.eval_split
         iterations: List[Dict[str, Any]] = []
         last_adapter_path: Optional[str] = None
 
@@ -239,6 +344,7 @@ class WorkflowRunner:
                     "model_loader_key": cfg.model_loader_key,
                     "train_config": train_config.model_dump(),
                     "max_samples": cfg.max_samples,
+                    "training_modality": cfg.training_modality,
                 },
             )
             iterations.append(train_out["iteration_record"])
@@ -254,9 +360,22 @@ class WorkflowRunner:
             {
                 "run_dir": cfg.run_dir,
                 "hf_model_id": cfg.hf_model_id,
-                "split": cfg.eval_split,
+                "split": eval_split,
                 "max_samples": cfg.eval_max_samples,
                 "max_new_tokens": cfg.eval_max_new_tokens,
+                "training_modality": cfg.training_modality,
+                "train_log_paths": train_out.get("log_paths"),
+                "max_steps": cfg.max_steps,
+                "eval_enable_llm_judge": cfg.eval_enable_llm_judge,
+                "eval_judge_max_samples": cfg.eval_judge_max_samples,
+                "eval_judge_batch_size": cfg.eval_judge_batch_size,
+                "eval_judge_batch_delay": cfg.eval_judge_batch_delay,
+                "target_language": cfg.sft_target_language,
+                "llm_provider": cfg.llm_provider,
+                "llm_model": cfg.llm_model,
+                "llm_api_key": cfg.llm_api_key,
+                "llm_batch_size": cfg.llm_batch_size,
+                "llm_batch_delay": cfg.llm_batch_delay,
             },
         )
 
@@ -264,7 +383,7 @@ class WorkflowRunner:
         report_path = reporting.finalize({
             "dataset_summary": dataset_out["dataset_summary"],
             "component_selection": {
-                "dataset_loader_key": "hf_text_default",
+                "dataset_loader_key": f"hf_{cfg.training_modality}_default",
                 "model_loader_key": cfg.model_loader_key,
                 "lora_preset_key": cfg.lora_preset_key,
                 "trainer_key": cfg.trainer_key,
@@ -292,6 +411,8 @@ class WorkflowRunner:
     # ── minimal_agentic mode ─────────────────────────────────────────────────
 
     def _run_minimal_agentic(self) -> Dict[str, Any]:
+        from core.registry.builtins import build_registry
+
         cfg = self.cfg
         if not cfg.data_path:
             raise ValueError("Agentic mode requires data_path in config.")
@@ -301,7 +422,7 @@ class WorkflowRunner:
         eval_model: EvalModelTool = self.tools["eval_model"]
         reporting: ReportingTool = self.tools["reporting"]
 
-        dataset_out = build_dataset.execute(cfg.data_path, {"run_dir": cfg.run_dir})
+        dataset_out = build_dataset.execute(cfg.data_path, self._dataset_build_config())
 
         registry = build_registry()
         snapshot = registry.snapshot()
@@ -352,6 +473,7 @@ class WorkflowRunner:
 
         iterations: List[Dict[str, Any]] = []
         last_adapter_path: Optional[str] = None
+        last_train_out: Dict[str, Any] | None = None
         lora_preset_key = component_selection.lora_preset_key
 
         for iter_idx in range(cfg.max_iters):
@@ -371,6 +493,7 @@ class WorkflowRunner:
             )
             iterations.append(train_out["iteration_record"])
             last_adapter_path = train_out["adapter_path"]
+            last_train_out = train_out
 
             log_tail = read_log_tail(train_out["log_paths"]["train_log"])
             decision = agent.suggest_training_adjustments(
@@ -390,15 +513,29 @@ class WorkflowRunner:
         # Push adapter to HF Hub
         hub_info = _push_to_hf_hub_if_configured(cfg, adapter_path=last_adapter_path)
 
+        dataset_ref = dataset_out["dataset_ref"]
         eval_out = eval_model.execute(
             last_adapter_path,
-            cfg.data_path,
+            dataset_ref["data_path"],
             {
                 "run_dir": cfg.run_dir,
                 "hf_model_id": hf_model_id,
-                "split": cfg.eval_split,
+                "split": dataset_ref.get("eval_split") or cfg.eval_split,
                 "max_samples": cfg.eval_max_samples,
                 "max_new_tokens": cfg.eval_max_new_tokens,
+                "training_modality": cfg.training_modality,
+                "train_log_paths": (last_train_out or {}).get("log_paths"),
+                "max_steps": cfg.max_steps,
+                "eval_enable_llm_judge": cfg.eval_enable_llm_judge,
+                "eval_judge_max_samples": cfg.eval_judge_max_samples,
+                "eval_judge_batch_size": cfg.eval_judge_batch_size,
+                "eval_judge_batch_delay": cfg.eval_judge_batch_delay,
+                "target_language": cfg.sft_target_language,
+                "llm_provider": cfg.llm_provider,
+                "llm_model": cfg.llm_model,
+                "llm_api_key": cfg.llm_api_key,
+                "llm_batch_size": cfg.llm_batch_size,
+                "llm_batch_delay": cfg.llm_batch_delay,
             },
         )
 
@@ -434,6 +571,14 @@ class WorkflowRunner:
             "error_analysis": error_analysis,
             "report_path": report_path,
             **hub_info,
+        }
+
+    def _dataset_build_config(self) -> Dict[str, Any]:
+        return {
+            "run_dir": self.cfg.run_dir,
+            "validation_ratio": self.cfg.dataset_val_ratio,
+            "eval_split": self.cfg.eval_split,
+            "seed": self.cfg.seed,
         }
 
 

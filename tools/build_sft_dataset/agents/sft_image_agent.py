@@ -20,11 +20,13 @@ class ImageAnnotationAgent:
         target_language: str = "English",
         batch_size: int = 5,
         batch_delay: float = 1.0,
+        prompt_preset: str = "default",
     ) -> None:
         self.client = client
         self.target_language = target_language
         self.batch_size = batch_size
         self.batch_delay = batch_delay
+        self.prompt_preset = prompt_preset
 
     def annotate(
         self, items: List[ImageItem],
@@ -47,6 +49,7 @@ class ImageAnnotationAgent:
                 prompt_cache[hint] = build_image_prompt(
                     target_language=self.target_language,
                     topic_hint=item.topic_hint,
+                    prompt_preset=self.prompt_preset,
                 )
             requests.append(
                 LLMRequest(

@@ -22,6 +22,39 @@ def load_images(input_dir: str, exts: Iterable[str]) -> List[ImageItem]:
     return images
 
 
+def load_images_from_manifest(manifest_path: str, exts: Iterable[str] | None = None) -> List[ImageItem]:
+    images: List[ImageItem] = []
+    ext_set = {ext.lower() for ext in (exts or [".jpg", ".jpeg", ".png", ".webp"])}
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    records = payload.get("images", []) if isinstance(payload, dict) else payload
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        file_path = str(record.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        path = Path(file_path)
+        if not path.exists() or path.suffix.lower() not in ext_set:
+            continue
+        images.append(
+            ImageItem(
+                item_id=str(path),
+                image_path=str(path),
+                topic_hint=_image_topic_hint(record),
+            )
+        )
+    return images
+
+
+def _image_topic_hint(record: dict) -> str:
+    domain = str(record.get("domain_label") or record.get("domain_id") or "").strip()
+    subdomain = str(record.get("subdomain_label") or record.get("subdomain_id") or "").strip()
+    query = str(record.get("query") or "").strip()
+    parts = [part for part in (domain, subdomain, query) if part]
+    return " / ".join(parts)
+
+
 def load_texts_from_dir(input_dir: str) -> List[TextItem]:
     items: List[TextItem] = []
     for path in Path(input_dir).rglob("*.txt"):

@@ -13,7 +13,12 @@ from typing import Any, Dict, Iterable, List
 from core.llm import LLMClient
 from tools.base_tool import BaseTool
 from tools.build_sft_dataset.agents import ImageAnnotationAgent, TextAnnotationAgent
-from tools.build_sft_dataset.loaders import load_images, load_texts_from_dir, load_texts_from_jsonl
+from tools.build_sft_dataset.loaders import (
+    load_images,
+    load_images_from_manifest,
+    load_texts_from_dir,
+    load_texts_from_jsonl,
+)
 from tools.build_sft_dataset.sft_builders import (
     build_image_sft_examples,
     build_text_sft_examples,
@@ -52,12 +57,14 @@ class BuildSftDatasetTool(BaseTool):
                 'model': str (falls back to env),
                 'api_key': str (falls back to env),
                 'input_dir': str (directory of images or texts),
+                'image_manifest': str (optional images.json with taxonomy metadata),
                 'input_jsonl': str (JSONL file for text items),
                 'text_field': str (default 'text'),
                 'image_exts': list[str],
                 'output_annotations': str (output path),
                 'output_sft': str (output path),
                 'target_language': str (default 'English'),
+                'prompt_preset': str (default 'default'),
                 'batch_size': int,
                 'batch_delay': float,
             }
@@ -70,6 +77,7 @@ class BuildSftDatasetTool(BaseTool):
             raise ValueError("config['mode'] must be 'image' or 'text'")
 
         target_language = config.get("target_language", "English")
+        prompt_preset = config.get("prompt_preset", "default")
         batch_size = config.get("batch_size", 5)
         batch_delay = config.get("batch_delay", 1.0)
         output_annotations = config.get("output_annotations", "annotations.jsonl")
@@ -94,6 +102,7 @@ class BuildSftDatasetTool(BaseTool):
                 target_language=target_language,
                 batch_size=batch_size,
                 batch_delay=batch_delay,
+                prompt_preset=prompt_preset,
             )
         else:
             agent = TextAnnotationAgent(
@@ -101,6 +110,7 @@ class BuildSftDatasetTool(BaseTool):
                 target_language=target_language,
                 batch_size=batch_size,
                 batch_delay=batch_delay,
+                prompt_preset=prompt_preset,
             )
 
         annotations, failures = agent.annotate(items)
@@ -125,14 +135,18 @@ class BuildSftDatasetTool(BaseTool):
             "num_failures": len(failures),
             "annotations_path": output_annotations,
             "sft_path": output_sft,
+            "prompt_preset": prompt_preset,
         }
 
     def _load_items(self, mode: str, config: Dict[str, Any]) -> list:
         if mode == "image":
+            manifest = config.get("image_manifest") or config.get("input_manifest")
+            exts = config.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
+            if manifest:
+                return load_images_from_manifest(manifest, exts)
             input_dir = config.get("input_dir")
             if not input_dir:
-                raise ValueError("config['input_dir'] required for image mode")
-            exts = config.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
+                raise ValueError("config['input_dir'] or config['image_manifest'] required for image mode")
             return load_images(input_dir, exts)
         else:
             input_jsonl = config.get("input_jsonl")

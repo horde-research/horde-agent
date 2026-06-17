@@ -1,7 +1,8 @@
 """Agent for generating subcategories — supports batched execution."""
 
+import json
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from core.llm import LLMClient, LLMRequest
 
@@ -114,3 +115,36 @@ class SubcategoryAgent:
                 logger.error("Subcategory generation failed for '%s': %s", resp.request_id, resp.error)
                 result[resp.request_id] = []
         return result
+
+    def repair_for_category(
+        self,
+        category: Dict[str, str],
+        existing_subcategories: List[Dict[str, str]],
+        country_or_culture: str,
+        quality_report: Dict[str, Any],
+        culture_profile: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        category_name = category["name"]
+        user_message = (
+            "Repair the subcategory list for one cultural category.\n\n"
+            f"Country/Culture: {country_or_culture}\n"
+            f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
+            f"Category:\n{json.dumps(category, ensure_ascii=False, indent=2)}\n\n"
+            f"Existing subcategories:\n{json.dumps(existing_subcategories, ensure_ascii=False, indent=2)}\n\n"
+            f"Subcategory quality report:\n{json.dumps(quality_report, ensure_ascii=False, indent=2)}\n\n"
+            "Return a complete replacement list for this category only. Generate specific, distinct, "
+            "well-described subcategories that fit the parent category. Return only a JSON object "
+            "with key 'subcategories'."
+        )
+        request = LLMRequest(
+            request_id=f"repair_subcategories::{category_name}",
+            system_prompt=SYSTEM_PROMPT,
+            user_message=user_message,
+        )
+        resp = self.client.generate_json_sync(request)
+        if not resp.success:
+            logger.error("Subcategory repair failed for '%s': %s", category_name, resp.error)
+            return existing_subcategories
+        repaired = resp.data.get("subcategories", [])
+        logger.info("Repaired subcategories for '%s': %d -> %d.", category_name, len(existing_subcategories), len(repaired))
+        return repaired or existing_subcategories

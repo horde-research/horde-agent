@@ -12,6 +12,7 @@ from core.data.hf_dataset import (
 )
 from core.ml.hf_loader import (
     load_hf_causal_lm,
+    load_hf_image_text_model,
     load_hf_multimodal_placeholder,
     load_hf_vision_placeholder,
 )
@@ -20,6 +21,7 @@ from core.registry.registry import Registry
 # NOTE: This trainer class will be defined under tools/train and referenced here during cutover.
 # During the migration, we keep the string key stable: "static_sft_default".
 from tools.train.trainers.static_sft_trainer import StaticSFTTrainer
+from tools.train.trainers.vision_language_sft_trainer import VisionLanguageSFTTrainer
 
 ATTN_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "c_attn", "c_proj"]
 MLP_TARGET_MODULES = ["up_proj", "down_proj", "gate_proj", "c_fc"]
@@ -58,11 +60,14 @@ def build_registry() -> Registry:
         },
         model_loaders={
             "hf_causal_lm_default": load_hf_causal_lm,
+            "hf_image_text_default": load_hf_image_text_model,
             "hf_vision_default": load_hf_vision_placeholder,
             "hf_multimodal_default": load_hf_multimodal_placeholder,
         },
         lora_presets=LORA_PRESETS,
-        trainers={"static_sft_default": StaticSFTTrainer},
+        trainers={
+            "static_sft_default": StaticSFTTrainer,
+            "vision_language_sft": VisionLanguageSFTTrainer,
+        },
         default_hf_model_id=DEFAULT_HF_MODEL_ID,
     )
-

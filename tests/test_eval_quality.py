@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import torch
+from PIL import Image
+
+from core.llm.client import LLMResponse
+from tools.eval_model.eval.error_analysis import cluster_failures
+from tools.eval_model.eval.failures import collect_failures_with_metrics
+from tools.eval_model.eval.llm_judge import run_llm_judge
+from tools.eval_model.eval.train_health import evaluate_training_health
+from tools.eval_model.tool import EvalModelTool
+
+
+class FakeTextTokenizer:
+    model_max_length = 64
+
+    def __call__(self, text, **kwargs):
+        return {
+            "input_ids": torch.tensor([[11, 12]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1, 1]], dtype=torch.long),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        tokens = token_ids.tolist() if hasattr(token_ids, "tolist") else list(token_ids)
+        if tokens == [101, 102]:
+            return "Paris."
+        if tokens == [11, 12, 101, 102]:
+            return "What is the capital of France? Paris."
+        return " ".join(str(token) for token in tokens)
+
+
+class FakeTextModel:
+    device = torch.device("cpu")
+
+    def eval(self):
+        return self
+
+    def generate(self, **kwargs):
+        input_ids = kwargs["input_ids"]
+        generated = torch.tensor([[101, 102]], dtype=torch.long)
+        return torch.cat([input_ids, generated], dim=1)
+
+
+class FakeImageTokenizer:
+    model_max_length = 64
+
+
+class FakeImageProcessor:
+    tokenizer = FakeImageTokenizer()
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        return "USER: <image>\nDescribe the image.\nASSISTANT:"
+
+    def __call__(self, **kwargs):
+        return {
+            "input_ids": torch.tensor([[21, 22]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1, 1]], dtype=torch.long),
+            "pixel_values": torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        tokens = token_ids.tolist() if hasattr(token_ids, "tolist") else list(token_ids)
+        if tokens == [201, 202]:
+            return "A red square."
+        if tokens == [21, 22, 201, 202]:
+            return "USER: <image>\nDescribe the image.\nASSISTANT: A red square."
+        return " ".join(str(token) for token in tokens)
+
+
+class FakeImageModel:
+    def eval(self):
+        return self
+
+    def parameters(self):
+        return iter([])
+
+    def generate(self, **kwargs):
+        input_ids = kwargs["input_ids"]
+        generated = torch.tensor([[201, 202]], dtype=torch.long)
+        return torch.cat([input_ids, generated], dim=1)
+
+
+class FakeJudgeClient:
+    def generate_json_batch_sync(self, requests, *, batch_size=5, batch_delay_seconds=1.5):
+        responses = []
+        for index, request in enumerate(requests):
+            responses.append(
+                LLMResponse(
+                    request_id=request.request_id,
+                    success=True,
+                    data={
+                        "instruction_following": "pass" if index == 0 else "fail",
+                        "semantic_correctness": "pass" if index == 0 else "fail",
+                        "groundedness": "pass",
+                        "completeness": "pass",
+                        "language_quality": "pass",
+                        "hallucination_risk": "none",
+                        "failure_categories": [] if index == 0 else ["irrelevant"],
+                        "rationale": "ok" if index == 0 else "bad answer",
+                    },
+                )
+            )
+        return responses
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def test_training_health_flags_exploding_loss(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_jsonl(
+        metrics_path,
+        [
+            {"step": 1, "loss": 1.0, "grad_norm": 1.0},
+            {"step": 2, "loss": 2.0, "grad_norm": 2.0},
+            {"step": 3, "loss": 4.0, "grad_norm": 3.0},
+        ],
+    )
+
+    report = evaluate_training_health({"metrics": str(metrics_path)}, expected_steps=3)
+
+    assert report["gate_status"] == "repair"
+    assert "training_loss_exploding" in report["blocking_issues"]
+    assert report["metrics"]["loss_trend"] == "exploding"
+
+
+def test_collect_failures_with_metrics_and_single_cluster(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    _write_jsonl(
+        predictions_path,
+        [
+            {"id": 0, "input": "Say hello", "prediction": "", "reference": "Hello"},
+            {"id": 1, "input": "Capital?", "prediction": "Paris", "reference": "Paris"},
+        ],
+    )
+
+    failures_path, metrics = collect_failures_with_metrics(str(predictions_path), str(tmp_path))
+    preview = cluster_failures(failures_path, str(tmp_path))
+
+    assert metrics["num_predictions"] == 2
+    assert metrics["num_failures"] == 1
+    assert metrics["failure_rate"] == 0.5
+    assert preview["clusters"][0]["label"] == "generation_empty_or_short"
+
+
+def test_llm_judge_aggregates_major_failures(monkeypatch, tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    _write_jsonl(
+        predictions_path,
+        [
+            {"id": 0, "input": "Q1", "prediction": "A1", "reference": "A1"},
+            {"id": 1, "input": "Q2", "prediction": "wrong", "reference": "A2"},
+        ],
+    )
+    monkeypatch.setattr("tools.eval_model.eval.llm_judge.LLMClient.from_env", lambda **kwargs: FakeJudgeClient())
+
+    summary = run_llm_judge(
+        str(predictions_path),
+        str(tmp_path),
+        modality="text",
+        target_language="English",
+        provider="fake",
+        model="fake",
+        api_key="fake",
+        batch_size=2,
+        batch_delay=0.0,
+    )
+
+    assert summary["enabled"] is True
+    assert summary["gate_status"] == "repair"
+    assert summary["major_failure_count"] == 1
+    assert summary["failure_category_counts"] == {"irrelevant": 1}
+    assert Path(summary["judge_results_path"]).exists()
+
+
+def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp_path: Path) -> None:
+    test_dataset = tmp_path / "text_sft.jsonl"
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    _write_jsonl(test_dataset, [{"prompt": "What is the capital of France?", "response": "Paris."}])
+    metrics_path = tmp_path / "train_metrics.jsonl"
+    _write_jsonl(metrics_path, [{"step": 1, "loss": 2.0}, {"step": 2, "loss": 1.0}])
+    monkeypatch.setattr("tools.eval_model.tool.load_hf_causal_lm", lambda model_id: (FakeTextModel(), FakeTextTokenizer()))
+    monkeypatch.setattr("tools.eval_model.tool.load_lora_adapters", lambda model, adapter_dir: model)
+
+    result = EvalModelTool().execute(
+        str(adapter_dir),
+        str(test_dataset),
+        {
+            "run_dir": str(tmp_path),
+            "hf_model_id": "fake-text-model",
+            "training_modality": "text",
+            "train_log_paths": {"metrics": str(metrics_path)},
+            "max_steps": 2,
+            "eval_enable_llm_judge": False,
+            "max_samples": 1,
+        },
+    )
+
+    assert Path(result["predictions_path"]).exists()
+    assert Path(result["eval_metrics_path"]).exists()
+    assert result["metrics"]["training_modality"] == "text"
+    assert result["training_health"]["gate_status"] == "pass"
+    assert result["judge_summary"]["enabled"] is False
+
+
+def test_eval_model_image_path_uses_vlm_loader(monkeypatch, tmp_path: Path) -> None:
+    image_path = tmp_path / "red.jpg"
+    Image.new("RGB", (8, 8), color=(255, 0, 0)).save(image_path)
+    test_dataset = tmp_path / "image_sft.jsonl"
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    _write_jsonl(
+        test_dataset,
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe the image."},
+                            {"type": "image", "image": str(image_path)},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "A red square."}]},
+                ]
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "tools.eval_model.tool.load_hf_image_text_model",
+        lambda model_id: (FakeImageModel(), FakeImageProcessor()),
+    )
+    monkeypatch.setattr("tools.eval_model.tool.load_lora_adapters", lambda model, adapter_dir: model)
+
+    result = EvalModelTool().execute(
+        str(adapter_dir),
+        str(test_dataset),
+        {
+            "run_dir": str(tmp_path),
+            "hf_model_id": "fake-vlm",
+            "training_modality": "image",
+            "eval_enable_llm_judge": False,
+            "max_samples": 1,
+        },
+    )
+
+    prediction = json.loads(Path(result["predictions_path"]).read_text(encoding="utf-8").splitlines()[0])
+    assert prediction["image_path"] == str(image_path)
+    assert prediction["prediction"] == "A red square."
+    assert result["metrics"]["training_modality"] == "image"
+    assert result["judge_summary"]["enabled"] is False

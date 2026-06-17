@@ -1,7 +1,8 @@
 """Agent for generating search queries — supports batched execution."""
 
+import json
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from core.llm import LLMClient, LLMRequest
 
@@ -127,6 +128,46 @@ class QueryAgent:
                 result[cat_name][sub_name] = []
 
         return result
+
+    def repair_for_subcategory(
+        self,
+        category: Dict[str, str],
+        subcategory: Dict[str, str],
+        existing_queries: List[str],
+        country_or_culture: str,
+        quality_report: Dict[str, Any],
+        culture_profile: Dict[str, Any],
+    ) -> List[str]:
+        category_name = category["name"]
+        subcategory_name = subcategory["name"]
+        user_message = (
+            "Repair Google search queries for one cultural subcategory before web collection.\n\n"
+            f"Country/Culture: {country_or_culture}\n"
+            f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
+            f"Category:\n{json.dumps(category, ensure_ascii=False, indent=2)}\n\n"
+            f"Subcategory:\n{json.dumps(subcategory, ensure_ascii=False, indent=2)}\n\n"
+            f"Existing queries:\n{json.dumps(existing_queries, ensure_ascii=False, indent=2)}\n\n"
+            f"Query quality report:\n{json.dumps(quality_report, ensure_ascii=False, indent=2)}\n\n"
+            "Return a complete replacement list of search queries for this subcategory only. "
+            "Queries should be specific, searchable, include the target culture or aliases, and mix "
+            "English with native-language/native-script queries where appropriate. Return only a JSON "
+            "object with key 'search_queries'."
+        )
+        request = LLMRequest(
+            request_id=f"repair_queries::{category_name}||{subcategory_name}",
+            system_prompt=SYSTEM_PROMPT,
+            user_message=user_message,
+        )
+        resp = self.client.generate_json_sync(request)
+        if not resp.success:
+            logger.error("Query repair failed for '%s / %s': %s", category_name, subcategory_name, resp.error)
+            return existing_queries
+        queries = resp.data.get("search_queries", []) or resp.data.get("keywords", [])
+        if queries and isinstance(queries[0], dict):
+            queries = [q.get("query", "") or q.get("keyword", "") for q in queries if isinstance(q, dict)]
+        repaired = [q for q in queries if q and isinstance(q, str)]
+        logger.info("Repaired queries for '%s / %s': %d -> %d.", category_name, subcategory_name, len(existing_queries), len(repaired))
+        return repaired or existing_queries
 
 
 # Backward-compatible alias

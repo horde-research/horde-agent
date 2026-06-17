@@ -1,8 +1,13 @@
-"""
-Dataset building tool.
+"""Dataset building tool.
 
 Prepares training-ready datasets from raw data.
 """
+
+import shutil
+from pathlib import Path
+from typing import Any
+
+from datasets import Dataset, DatasetDict
 
 from tools.base_tool import BaseTool
 
@@ -11,7 +16,7 @@ from core.data.manifest import write_manifest
 from core.data.modality import build_example_preview, infer_modality
 from core.data.validation import validate_text_columns
 from core.types.pipeline_types import DatasetSummary
-from pathlib import Path
+
 
 class BuildDatasetTool(BaseTool):
     """
@@ -48,25 +53,43 @@ class BuildDatasetTool(BaseTool):
                 'dataset_manifest_path': str
             }
         """
-        split = config.get("split", "train")
+        source_split = str(config.get("split", "train"))
+        train_split = str(config.get("train_split", "train"))
+        validation_split = str(config.get("validation_split") or config.get("eval_split") or "validation")
+        validation_ratio = _validation_ratio(config.get("validation_ratio", config.get("val_ratio", 0.1)))
+        seed = int(config.get("seed", 42))
         run_dir = config.get("run_dir") or config.get("out_dir")
         if not run_dir:
             raise ValueError("BuildDatasetTool requires config['run_dir'] (or 'out_dir').")
         Path(run_dir).mkdir(parents=True, exist_ok=True)
 
-        dataset, resolved_id = load_dataset_from_path(data_path, split=split)
+        dataset, resolved_id = load_dataset_from_path(data_path, split=source_split)
         columns = list(getattr(dataset, "column_names", []))
         features = getattr(dataset, "features", {}) or {}
         modality_candidates = infer_modality(columns, features)
         example = build_example_preview(dataset[0]) if len(dataset) > 0 else {}
         text_columns = [c for c in columns if c in {"text", "prompt", "response", "instruction", "output"}]
         warnings = validate_text_columns(dataset, text_columns)
+        split_dataset, split_warnings = _build_train_validation_splits(
+            dataset,
+            train_split=train_split,
+            validation_split=validation_split,
+            validation_ratio=validation_ratio,
+            seed=seed,
+        )
+        warnings.extend(split_warnings)
+        dataset_dir = Path(run_dir) / "dataset"
+        if dataset_dir.exists():
+            shutil.rmtree(dataset_dir)
+        split_dataset.save_to_disk(str(dataset_dir))
+        split_counts = {name: len(split_dataset[name]) for name in split_dataset.keys()}
 
         summary = DatasetSummary(
-            data_path=data_path,
+            data_path=str(dataset_dir),
             resolved_data_id=resolved_id,
             columns=columns,
             sample_count=len(dataset),
+            split_counts=split_counts,
             example=example,
             modality_candidates=modality_candidates,
             validation_warnings=warnings,
@@ -74,7 +97,49 @@ class BuildDatasetTool(BaseTool):
         manifest_path = write_manifest(run_dir, summary.model_dump())
 
         return {
-            "dataset_ref": {"kind": "hf", "data_path": data_path, "split": split, "resolved_id": resolved_id},
+            "dataset_ref": {
+                "kind": "hf",
+                "data_path": str(dataset_dir),
+                "split": train_split,
+                "eval_split": validation_split,
+                "resolved_id": resolved_id,
+                "source_data_path": str(data_path),
+                "source_split": source_split,
+                "split_counts": split_counts,
+            },
             "dataset_summary": summary.model_dump(),
             "dataset_manifest_path": manifest_path,
         }
+
+
+def _validation_ratio(value: Any) -> float:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        ratio = 0.1
+    return min(max(ratio, 0.0), 0.5)
+
+
+def _build_train_validation_splits(
+    dataset: Dataset,
+    *,
+    train_split: str,
+    validation_split: str,
+    validation_ratio: float,
+    seed: int,
+) -> tuple[DatasetDict, list[str]]:
+    warnings: list[str] = []
+    total = len(dataset)
+    if total <= 0:
+        return DatasetDict({train_split: dataset, validation_split: dataset}), ["dataset_empty"]
+    if total == 1 or validation_ratio <= 0.0:
+        if total == 1:
+            warnings.append("validation_reuses_train_single_sample")
+        else:
+            warnings.append("validation_disabled_reuses_train")
+        return DatasetDict({train_split: dataset, validation_split: dataset}), warnings
+
+    val_count = max(1, int(round(total * validation_ratio)))
+    val_count = min(val_count, total - 1)
+    split = dataset.train_test_split(test_size=val_count, seed=seed, shuffle=True)
+    return DatasetDict({train_split: split["train"], validation_split: split["test"]}), warnings

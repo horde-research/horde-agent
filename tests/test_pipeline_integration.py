@@ -510,6 +510,7 @@ class TestCoreData:
 
 class TestBuildDatasetTool:
     def test_loads_jsonl_and_builds_summary(self, run_dir):
+        from core.data.hf_dataset import load_dataset_from_path
         from tools.build_dataset.tool import BuildDatasetTool
 
         jsonl_path = os.path.join(run_dir, "sft.jsonl")
@@ -525,10 +526,19 @@ class TestBuildDatasetTool:
         result = BuildDatasetTool().execute(jsonl_path, {"run_dir": run_dir})
 
         assert "dataset_ref" in result
-        assert result["dataset_ref"]["data_path"] == jsonl_path
+        assert result["dataset_ref"]["source_data_path"] == jsonl_path
+        assert result["dataset_ref"]["split"] == "train"
+        assert result["dataset_ref"]["eval_split"] == "validation"
+        assert os.path.isdir(result["dataset_ref"]["data_path"])
+        assert result["dataset_ref"]["split_counts"] == {"train": 4, "validation": 1}
         assert result["dataset_summary"]["sample_count"] == 5
+        assert result["dataset_summary"]["split_counts"] == {"train": 4, "validation": 1}
         assert "messages" in result["dataset_summary"]["columns"]
         assert os.path.exists(result["dataset_manifest_path"])
+        train_ds, _ = load_dataset_from_path(result["dataset_ref"]["data_path"], split="train")
+        val_ds, _ = load_dataset_from_path(result["dataset_ref"]["data_path"], split="validation")
+        assert len(train_ds) == 4
+        assert len(val_ds) == 1
 
     def test_summary_detects_modality(self, run_dir):
         from tools.build_dataset.tool import BuildDatasetTool
@@ -973,4 +983,6 @@ class TestTaxonomySftBuildIntegration:
         dataset_result = BuildDatasetTool().execute(sft_result["sft_path"], {"run_dir": run_dir})
         assert dataset_result["dataset_summary"]["sample_count"] >= 1
         assert "messages" in dataset_result["dataset_summary"]["columns"]
-        assert dataset_result["dataset_ref"]["data_path"] == sft_result["sft_path"]
+        assert dataset_result["dataset_ref"]["source_data_path"] == sft_result["sft_path"]
+        assert Path(dataset_result["dataset_ref"]["data_path"]).is_dir()
+        assert dataset_result["dataset_ref"]["eval_split"] == "validation"
