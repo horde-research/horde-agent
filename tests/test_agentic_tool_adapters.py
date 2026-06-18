@@ -231,6 +231,60 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     assert result.artifacts["training_modality"] == "image"
 
 
+def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:
+    images_dir = tmp_path / "collect" / "images"
+    images_index = tmp_path / "collect" / "images.json"
+    images_dir.mkdir(parents=True)
+    images_index.write_text("[]", encoding="utf-8")
+    sft_path = tmp_path / "sft" / "sft.jsonl"
+    annotations_path = tmp_path / "sft" / "annotations.jsonl"
+    sft_path.parent.mkdir(parents=True)
+    sft_path.write_text('{"messages": []}\n', encoding="utf-8")
+    annotations_path.write_text('{"success": true}\n', encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+
+    def _push_dataset(local_path, repo_name, *, username=None, private=True):
+        calls.append({"local_path": local_path, "repo_name": repo_name, "username": username, "private": private})
+        return f"{username}/{repo_name}"
+
+    monkeypatch.setattr("core.hf_hub.push_dataset", _push_dataset)
+    sft_tool = FakeTool(
+        {
+            "mode": "image",
+            "num_items": 1,
+            "num_annotations": 1,
+            "num_examples": 1,
+            "num_failures": 0,
+            "annotations_path": str(annotations_path),
+            "sft_path": str(sft_path),
+        }
+    )
+    adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "sft_mode": "image",
+            "sft_target_language": "English",
+            "hf_dataset_repo": "test-owner/test-dataset",
+        },
+        artifacts={"images_dir": str(images_dir), "images_index": str(images_index)},
+    )
+
+    result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
+
+    assert result.status == "success"
+    assert result.artifacts["dataset_repo_id"] == "test-owner/test-dataset"
+    assert result.raw_output["dataset_repo_id"] == "test-owner/test-dataset"
+    assert calls == [
+        {
+            "local_path": str(sft_path),
+            "repo_name": "test-dataset",
+            "username": "test-owner",
+            "private": True,
+        }
+    ]
+
+
 def test_pipeline_config_syncs_training_modality_and_legacy_sft_mode(tmp_path: Path) -> None:
     cfg = PipelineConfig(
         mode="full_agentic",
@@ -305,6 +359,7 @@ def test_debug_stub_train_returns_valid_training_contract(tmp_path: Path) -> Non
             "train_batch_size": 2,
             "train_grad_accum": 1,
             "train_lr": 0.001,
+            "hf_adapter_repo": "should-not-upload",
         },
         artifacts={"dataset_ref": {"kind": "hf", "data_path": str(tmp_path / "sft.jsonl"), "split": "train"}},
     )
@@ -316,8 +371,53 @@ def test_debug_stub_train_returns_valid_training_contract(tmp_path: Path) -> Non
     assert Path(result.artifacts["adapter_path"]).exists()
     assert result.artifacts["train_metrics"]["steps"] == 7
     assert result.artifacts["iterations"][0]["metrics"]["steps"] == 7
+    assert result.artifacts["hf_adapter_upload_skipped"] == "debug_stub_train"
     assert result.raw_output["training_modality"] == "text"
     assert result.raw_output["debug_stub"] is True
+
+
+def test_train_adapter_pushes_adapter_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+
+    def _push_adapter(local_path, repo_name, *, username=None, private=True):
+        calls.append({"local_path": local_path, "repo_name": repo_name, "username": username, "private": private})
+        return f"{username}/{repo_name}"
+
+    monkeypatch.setattr("core.hf_hub.push_adapter", _push_adapter)
+    train_tool = FakeTool(
+        {
+            "adapter_path": str(adapter_dir),
+            "log_paths": {},
+            "metrics": {"steps": 1, "last_train_loss": 1.0},
+            "iteration_record": {"iter_idx": 0, "metrics": {"steps": 1}},
+        }
+    )
+    adapter = AgenticToolAdapter({"train": train_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "hf_model_id": "test-model",
+            "hf_adapter_repo": "test-owner/test-adapter",
+        },
+        artifacts={"dataset_ref": {"kind": "hf", "data_path": str(tmp_path / "sft.jsonl"), "split": "train"}},
+    )
+
+    result = adapter.execute_train_model(state, ActionRequest(ActionType.TRAIN_MODEL))
+
+    assert result.status == "success"
+    assert result.artifacts["adapter_repo_id"] == "test-owner/test-adapter"
+    assert result.raw_output["adapter_repo_id"] == "test-owner/test-adapter"
+    assert calls == [
+        {
+            "local_path": str(adapter_dir),
+            "repo_name": "test-adapter",
+            "username": "test-owner",
+            "private": True,
+        }
+    ]
 
 
 def test_debug_stub_eval_returns_valid_happy_eval_contract(tmp_path: Path) -> None:

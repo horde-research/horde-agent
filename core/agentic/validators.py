@@ -248,21 +248,24 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
         blocking_issues.append("failures_path_missing")
     if output.get("cluster_preview") is None:
         blocking_issues.append("cluster_preview_missing")
-    failure_rate = _failure_rate(output)
-    if failure_rate is not None and failure_rate > 0.5:
-        blocking_issues.append("eval_failure_rate_too_high")
-        recommended_actions.append("route_to_upstream_recovery")
-    labels = _cluster_labels(output.get("cluster_preview"))
     metrics_payload = output.get("metrics") or {}
     training_health = metrics_payload.get("training_health") if isinstance(metrics_payload, dict) else {}
+    judge = metrics_payload.get("judge") if isinstance(metrics_payload, dict) else {}
+    judge_enabled = isinstance(judge, dict) and bool(judge.get("enabled"))
+    failure_rate = _failure_rate(output)
+    if not judge_enabled and failure_rate is not None and failure_rate > 0.5:
+        blocking_issues.append("eval_failure_rate_too_high")
+        recommended_actions.append("route_to_upstream_recovery")
+    labels = [] if judge_enabled else _cluster_labels(output.get("cluster_preview"))
     if isinstance(training_health, dict) and training_health.get("gate_status") == "repair":
         blocking_issues.append("eval_training_failure")
         suggested_adjustments.update({"train_lr": "decrease", "train_grad_accum": "increase"})
-    judge = metrics_payload.get("judge") if isinstance(metrics_payload, dict) else {}
     judge_labels = _judge_labels(judge)
     labels.extend(judge_labels)
-    if isinstance(judge, dict) and judge.get("enabled") and judge.get("gate_status") == "repair":
+    if judge_enabled and judge.get("gate_status") == "repair":
         blocking_issues.append("eval_judge_quality_failure")
+    elif judge_enabled and judge.get("gate_status") == "warn":
+        warnings.append("eval_judge_quality_warn")
     if any(_has_any(label, ("knowledge", "missing", "coverage", "hallucination", "grounding")) for label in labels):
         blocking_issues.append("eval_knowledge_missing")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})

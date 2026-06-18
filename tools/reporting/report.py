@@ -49,6 +49,7 @@ def write_report(
     failures_path: str,
     cluster_preview: Dict[str, Any],
     error_analysis: Dict[str, Any],
+    pipeline_summary: Dict[str, Any] | None = None,
 ) -> str:
     out_path = Path(out_dir) / "report.md"
     decisions_path = Path(out_dir) / "agent_decisions.jsonl"
@@ -73,9 +74,88 @@ def write_report(
     lines.append("## Failure Clusters\n")
     lines.append("```\n" + json.dumps(cluster_preview, indent=2, ensure_ascii=False) + "\n```\n")
 
+    if pipeline_summary:
+        lines.append("## Pipeline Summary\n")
+        lines.extend(_format_pipeline_summary(pipeline_summary))
+
     lines.append("## Error Analysis\n")
     lines.append("```\n" + json.dumps(error_analysis, indent=2, ensure_ascii=False) + "\n```\n")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return str(out_path)
 
+
+def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+
+    taxonomy = summary.get("taxonomy_summary") or {}
+    if taxonomy:
+        lines.append("### Taxonomy\n")
+        lines.append(f"- Categories: {taxonomy.get('num_categories', 0)}")
+        lines.append(f"- Subcategories: {taxonomy.get('num_subcategories', 0)}")
+        lines.append(f"- Generated search queries: {taxonomy.get('num_generated_queries', 0)}")
+        lines.append(f"- Selected search queries: {taxonomy.get('num_selected_queries', 0)}")
+        lines.append("")
+        for category in taxonomy.get("categories") or []:
+            if not isinstance(category, dict):
+                continue
+            name = category.get("name") or "Unnamed category"
+            subcategories = category.get("subcategories") or []
+            lines.append(f"- {name} ({len(subcategories)} subcategories)")
+            for subcategory in subcategories:
+                lines.append(f"  - {subcategory}")
+        lines.append("")
+
+    collection = summary.get("collection_summary") or {}
+    if collection:
+        lines.append("### Collection\n")
+        lines.append(f"- Provider: {collection.get('provider') or 'unknown'}")
+        lines.append(f"- Text samples: {collection.get('num_samples', 0)}")
+        if collection.get("collected_at"):
+            lines.append(f"- Collected at: {collection['collected_at']}")
+        if collection.get("raw_result_path"):
+            lines.append(f"- Raw result path: `{collection['raw_result_path']}`")
+        lines.append("")
+
+    sft = summary.get("sft_summary") or {}
+    if sft:
+        lines.append("### SFT Dataset\n")
+        lines.append(f"- Mode: {sft.get('mode') or 'unknown'}")
+        lines.append(f"- Examples: {sft.get('num_examples', 0)}")
+        if sft.get("sft_path"):
+            lines.append(f"- SFT path: `{sft['sft_path']}`")
+        if sft.get("dataset_repo_id"):
+            lines.append(f"- HF dataset repo: `{sft['dataset_repo_id']}`")
+        if sft.get("hf_dataset_upload_error"):
+            lines.append(f"- HF dataset upload error: `{sft['hf_dataset_upload_error']}`")
+        lines.append("")
+
+    training = summary.get("training_summary") or {}
+    if training:
+        lines.append("### Training\n")
+        if training.get("adapter_path"):
+            lines.append(f"- Adapter path: `{training['adapter_path']}`")
+        if training.get("adapter_repo_id"):
+            lines.append(f"- HF adapter repo: `{training['adapter_repo_id']}`")
+        if training.get("hf_adapter_upload_skipped"):
+            lines.append(f"- HF adapter upload skipped: `{training['hf_adapter_upload_skipped']}`")
+        if training.get("hf_adapter_upload_error"):
+            lines.append(f"- HF adapter upload error: `{training['hf_adapter_upload_error']}`")
+        lines.append("")
+
+    eval_summary = summary.get("eval_summary") or {}
+    if eval_summary:
+        lines.append("### Evaluation\n")
+        if eval_summary.get("failure_rate") is not None:
+            lines.append(f"- Failure rate: {eval_summary['failure_rate']}")
+        if eval_summary.get("num_predictions") is not None:
+            lines.append(f"- Predictions: {eval_summary['num_predictions']}")
+        if eval_summary.get("predictions_path"):
+            lines.append(f"- Predictions path: `{eval_summary['predictions_path']}`")
+        if eval_summary.get("failures_path"):
+            lines.append(f"- Failures path: `{eval_summary['failures_path']}`")
+        lines.append("")
+
+    if not lines:
+        lines.append("No pipeline summary was provided.\n")
+    return lines

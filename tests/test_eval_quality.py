@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
+from core.agentic.validators import validate_eval_output
 from core.llm.client import LLMResponse
 from tools.eval_model.eval.error_analysis import cluster_failures
 from tools.eval_model.eval.failures import collect_failures_with_metrics
@@ -92,14 +93,8 @@ class FakeJudgeClient:
                     request_id=request.request_id,
                     success=True,
                     data={
-                        "instruction_following": "pass" if index == 0 else "fail",
-                        "semantic_correctness": "pass" if index == 0 else "fail",
-                        "groundedness": "pass",
-                        "completeness": "pass",
-                        "language_quality": "pass",
-                        "hallucination_risk": "none",
-                        "failure_categories": [] if index == 0 else ["irrelevant"],
-                        "rationale": "ok" if index == 0 else "bad answer",
+                        "verdict": "pass" if index == 0 else "major_failure",
+                        "categories": [] if index == 0 else ["irrelevant"],
                     },
                 )
             )
@@ -176,9 +171,42 @@ def test_llm_judge_aggregates_major_failures(monkeypatch, tmp_path: Path) -> Non
 
     assert summary["enabled"] is True
     assert summary["gate_status"] == "repair"
+    assert summary["quality_score"] == 0.5
+    assert summary["pass_count"] == 1
     assert summary["major_failure_count"] == 1
     assert summary["failure_category_counts"] == {"irrelevant": 1}
     assert Path(summary["judge_results_path"]).exists()
+    assert "reason" not in Path(summary["judge_results_path"]).read_text(encoding="utf-8")
+
+
+def test_eval_validator_uses_judge_gate_over_heuristic_failure_rate(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text("{}", encoding="utf-8")
+    failures_path.write_text("{}", encoding="utf-8")
+
+    report = validate_eval_output(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": [{"label": "semantic_mismatch", "count": 10}]},
+            "metrics": {
+                "failure_rate": 1.0,
+                "training_health": {"gate_status": "pass"},
+                "judge": {
+                    "enabled": True,
+                    "gate_status": "pass",
+                    "major_failure_rate": 0.0,
+                    "quality_score": 1.0,
+                    "failure_category_counts": {},
+                },
+            },
+        }
+    )
+
+    assert report.passed
+    assert "eval_failure_rate_too_high" not in report.blocking_issues
+    assert "eval_failure_clusters_present" not in report.warnings
 
 
 def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp_path: Path) -> None:

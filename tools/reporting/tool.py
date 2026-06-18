@@ -92,6 +92,7 @@ class ReportingTool(BaseTool):
         failures_path = eval_results.get("failures_path") or ""
         cluster_preview = eval_results.get("cluster_preview") or {}
         error_analysis = eval_results.get("error_analysis") or {}
+        pipeline_summary = eval_results.get("pipeline_summary") or {}
 
         iterations_raw = eval_results.get("iterations") or []
         iterations: List[IterationRecord] = []
@@ -109,4 +110,5 @@ class ReportingTool(BaseTool):
             failures_path=failures_path,
             cluster_preview=cluster_preview,
             error_analysis=error_analysis,
+            pipeline_summary=pipeline_summary,
         )

@@ -10,13 +10,12 @@ from core.llm import LLMClient, LLMRequest
 
 
 PASS_VALUES = {"pass", "ok", "good", "none"}
-WARN_VALUES = {"warn", "minor", "partial"}
-FAIL_VALUES = {"fail", "major", "bad"}
+MINOR_VALUES = {"minor_issue", "minor", "warn", "warning", "partial"}
+MAJOR_VALUES = {"major_failure", "major", "fail", "bad"}
 
 
 JUDGE_SYSTEM_PROMPT = """You are a strict evaluator for supervised fine-tuning validation outputs.
-Return only valid JSON. Do not reward verbosity. Judge whether the model answer satisfies
-the prompt and is semantically consistent with the reference answer."""
+Return only valid JSON. Judge semantic usefulness, not string similarity."""
 
 
 def run_llm_judge(
@@ -69,9 +68,12 @@ def run_llm_judge(
             else:
                 judged = {
                     "id": response.request_id,
+                    "verdict": "major_failure",
                     "major_failure": True,
+                    "warning": False,
+                    "categories": ["judge_error"],
                     "failure_categories": ["judge_error"],
-                    "rationale": response.error or "judge_error",
+                    "error": response.error or "judge_error",
                     "raw": response.data,
                 }
             judged["input"] = source.get("input")
@@ -106,11 +108,25 @@ def _judge_prompt(row: dict[str, Any], *, modality: str, target_language: str) -
         else ""
     )
     return f"""
-Evaluate this validation example.
+Evaluate this validation answer.
 
 Modality: {modality}
 Target language: {target_language or "unspecified"}
 {image_line}
+Judge semantic usefulness, not string similarity.
+The reference answer is the expected answer, but correct paraphrases are acceptable.
+Penalize answers that are factually wrong, contradict the reference, miss the core answer,
+hallucinate unsupported details, or fail the requested format.
+Do not penalize harmless wording differences or concise correct answers.
+
+Rubric:
+- pass: The answer satisfies the user request and is materially consistent with the reference.
+- minor_issue: The answer is mostly correct but incomplete, mildly verbose, or has a small non-critical issue.
+- major_failure: The answer is wrong, irrelevant, hallucinated, contradictory, empty, or misses the main point.
+
+Allowed categories:
+wrong_fact, missing_key_point, hallucination, irrelevant, format, language, unsafe, other
+
 User prompt:
 {row.get("input", "")}
 
@@ -122,57 +138,45 @@ Reference answer:
 
 Return JSON with exactly these keys:
 {{
-  "instruction_following": "pass|warn|fail",
-  "semantic_correctness": "pass|warn|fail",
-  "groundedness": "pass|warn|fail",
-  "completeness": "pass|warn|fail",
-  "language_quality": "pass|warn|fail",
-  "hallucination_risk": "none|minor|major",
-  "failure_categories": ["formatting|language|missing_knowledge|grounding|hallucination|incomplete|irrelevant|other"],
-  "rationale": "one concise sentence"
+  "verdict": "pass|minor_issue|major_failure",
+  "categories": ["wrong_fact|missing_key_point|hallucination|irrelevant|format|language|unsafe|other"]
 }}
 """.strip()
 
 
 def _normalize_judgement(payload: dict[str, Any]) -> dict[str, Any]:
-    dimensions = {
-        key: _norm_label(payload.get(key))
-        for key in (
-            "instruction_following",
-            "semantic_correctness",
-            "groundedness",
-            "completeness",
-            "language_quality",
-        )
-    }
-    hallucination = _norm_hallucination(payload.get("hallucination_risk"))
-    categories = [str(item) for item in payload.get("failure_categories") or []]
-    major_failure = hallucination == "major" or any(value == "fail" for value in dimensions.values())
-    warning = hallucination == "minor" or any(value == "warn" for value in dimensions.values())
+    verdict = _norm_verdict(payload.get("verdict"))
+    categories = _categories(payload.get("categories") or payload.get("failure_categories"))
+    major_failure = verdict == "major_failure"
+    warning = verdict == "minor_issue"
     return {
-        **dimensions,
-        "hallucination_risk": hallucination,
+        "verdict": verdict,
         "major_failure": major_failure,
-        "warning": warning and not major_failure,
+        "warning": warning,
+        "categories": categories,
         "failure_categories": categories,
-        "rationale": str(payload.get("rationale") or ""),
         "raw": payload,
     }
 
 
 def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_path: str) -> Dict[str, Any]:
     num_judged = len(rows)
+    passes = sum(1 for row in rows if row.get("verdict") == "pass")
+    minor = sum(1 for row in rows if row.get("verdict") == "minor_issue")
     major = sum(1 for row in rows if row.get("major_failure"))
-    warnings = sum(1 for row in rows if row.get("warning"))
     category_counts: dict[str, int] = {}
     for row in rows:
-        for category in row.get("failure_categories") or []:
+        for category in row.get("categories") or row.get("failure_categories") or []:
             category_counts[str(category)] = category_counts.get(str(category), 0) + 1
+    pass_rate = passes / num_judged if num_judged else 0.0
+    minor_rate = minor / num_judged if num_judged else 0.0
     major_rate = major / num_judged if num_judged else 0.0
-    warning_rate = warnings / num_judged if num_judged else 0.0
-    if major_rate > 0.2:
+    quality_score = (passes + (0.5 * minor)) / num_judged if num_judged else 0.0
+    if not num_judged:
+        gate_status = "pass"
+    elif major_rate > 0.2 or quality_score < 0.70:
         gate_status = "repair"
-    elif major_rate > 0.1 or warning_rate > 0.3:
+    elif major_rate > 0.1 or quality_score < 0.85:
         gate_status = "warn"
     else:
         gate_status = "pass"
@@ -184,10 +188,15 @@ def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_
         "judge_results_path": judge_results_path,
         "num_requested": num_requested,
         "num_judged": num_judged,
+        "pass_count": passes,
+        "minor_issue_count": minor,
         "major_failure_count": major,
-        "warning_count": warnings,
+        "warning_count": minor,
+        "quality_score": quality_score,
+        "pass_rate": pass_rate,
+        "minor_issue_rate": minor_rate,
         "major_failure_rate": major_rate,
-        "warning_rate": warning_rate,
+        "warning_rate": minor_rate,
         "failure_category_counts": category_counts,
     }
 
@@ -201,8 +210,13 @@ def disabled_judge_summary(out_dir: str) -> Dict[str, Any]:
         "judge_results_path": "",
         "num_requested": 0,
         "num_judged": 0,
+        "pass_count": 0,
+        "minor_issue_count": 0,
         "major_failure_count": 0,
         "warning_count": 0,
+        "quality_score": 0.0,
+        "pass_rate": 0.0,
+        "minor_issue_rate": 0.0,
         "major_failure_rate": 0.0,
         "warning_rate": 0.0,
         "failure_category_counts": {},
@@ -212,23 +226,20 @@ def disabled_judge_summary(out_dir: str) -> Dict[str, Any]:
     return summary
 
 
-def _norm_label(value: Any) -> str:
+def _norm_verdict(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in PASS_VALUES:
         return "pass"
-    if normalized in WARN_VALUES:
-        return "warn"
-    if normalized in FAIL_VALUES:
-        return "fail"
-    return "warn"
+    if normalized in MINOR_VALUES:
+        return "minor_issue"
+    if normalized in MAJOR_VALUES:
+        return "major_failure"
+    return "minor_issue"
 
 
-def _norm_hallucination(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"none", "no", "pass"}:
-        return "none"
-    if normalized in {"minor", "warn"}:
-        return "minor"
-    if normalized in {"major", "fail"}:
-        return "major"
-    return "minor"
+def _categories(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if value:
+        return [str(value)]
+    return []

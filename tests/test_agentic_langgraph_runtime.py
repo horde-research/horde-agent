@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
-from core.agentic.langgraph_runtime import LangGraphAgentRuntime
+from core.agentic.langgraph_runtime import LangGraphAgentRuntime, _log_eval_failure_details
 from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
 from core.agentic.resume import StaticResumeDecisionProvider
 from core.agentic.state_store import PipelineStateStore
@@ -175,3 +175,65 @@ def test_langgraph_runtime_logs_collect_data_recovery_iteration(tmp_path: Path, 
     assert final_state.config["serper_results_per_query"] == 6
     assert "Agent recovery iteration: stage=collect_data attempt=1" in caplog.text
     assert "recovery_expand_collection_coverage" in caplog.text
+
+
+def test_langgraph_runtime_logs_eval_failure_details(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="core.agentic.langgraph_runtime")
+    report = QualityReport(
+        stage=ActionType.EVALUATE_MODEL,
+        passed=False,
+        gate_status="repair",
+        decision="repair",
+        blocking_issues=["eval_failure_rate_too_high", "eval_training_failure"],
+        metrics={"failure_rate": 1.0, "training_health_gate": "repair"},
+    )
+    result = ActionResult(
+        action_type=ActionType.EVALUATE_MODEL,
+        status="failed",
+        quality_report=report,
+        artifacts={
+            "predictions_path": "predictions.jsonl",
+            "failures_path": "failures.jsonl",
+            "eval_metrics_path": "eval_metrics.json",
+            "cluster_preview": {
+                "clusters": [
+                    {"label": "semantic_mismatch", "count": 8, "examples": [{"input": "hidden"}]},
+                ]
+            },
+            "eval_metrics": {
+                "failure_rate": 1.0,
+                "num_failures": 8,
+                "num_predictions": 8,
+                "avg_similarity": 0.04,
+                "failure_reason_counts": {"low": 8, "repetition": 1},
+            },
+            "training_health": {
+                "gate_status": "repair",
+                "blocking_issues": ["training_steps_incomplete"],
+                "metrics": {
+                    "last_step": 5,
+                    "expected_steps": 200,
+                    "step_completion_ratio": 0.025,
+                    "first_train_loss": 2.7,
+                    "last_train_loss": 2.7,
+                    "best_eval_loss": None,
+                    "loss_trend": "insufficient",
+                },
+            },
+            "judge_summary": {
+                "enabled": False,
+                "gate_status": "pass",
+                "major_failure_rate": 0.0,
+            },
+        },
+    )
+
+    _log_eval_failure_details(result, report)
+
+    assert "Agent eval failure details:" in caplog.text
+    assert '"failure_rate": 1.0' in caplog.text
+    assert '"failure_reason_counts": {"low": 8, "repetition": 1}' in caplog.text
+    assert '"last_step": 5' in caplog.text
+    assert '"expected_steps": 200' in caplog.text
+    assert '"last_train_loss": 2.7' in caplog.text
+    assert "hidden" not in caplog.text

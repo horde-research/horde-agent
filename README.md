@@ -13,10 +13,10 @@ The stages do the following:
 - `generate_taxonomy`: builds culture/domain categories, subcategories, text search queries, and optional language-agnostic image taxonomy slots.
 - `collect_data`: uses Serper text search and, when enabled, Serper Google Images to collect raw text and image data.
 - `assess_coverage_and_refine_queries`: checks whether collected text/images cover enough queries and image taxonomy slots; if not, it routes back to collection with refined text queries or targeted image query specs.
-- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM.
+- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM; when `HF_DATASET_REPO` is configured, the SFT JSONL is pushed to Hugging Face Hub.
 - `build_dataset`: builds a Hugging Face dataset with `train` and `validation` splits.
-- `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled.
-- `evaluate_model`: checks train-health logs, runs deterministic validation evaluation, and can optionally run LLM-as-judge.
+- `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled; when `HF_ADAPTER_REPO` is configured, the produced LoRA adapter is pushed to Hugging Face Hub.
+- `evaluate_model`: checks train-health logs, runs deterministic validation evaluation, and can optionally run a categorical LLM-as-judge quality gate.
 - `generate_report`: writes the final run report from collected artifacts and metrics.
 
 Agentic behavior currently happens in bounded places:
@@ -81,7 +81,7 @@ Required for `full_agentic`:
 Optional but common:
 
 - `HF_TOKEN`: needed for private/gated Hugging Face models and optional pushes.
-- `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push outputs to Hugging Face Hub.
+- `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated SFT dataset and LoRA adapter to Hugging Face Hub from `full_agentic` and `workflow` runs. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
 
 ## CPU Debug Run
@@ -153,6 +153,43 @@ HF_MODEL_ID=<image-text-model-id>
 
 Keep `EVAL_ENABLE_LLM_JUDGE=false` for the first GPU smoke run. Enable it only after the deterministic train/eval path works.
 
+Judge-enabled eval can be run from an existing trained adapter:
+
+```bash
+EVAL_ENABLE_LLM_JUDGE=true EVAL_MAX_SAMPLES=8 PYENV_VERSION=agents pyenv exec python -m agent.main \
+  --mode full_agentic \
+  --country Kazakhstan \
+  --out_dir output/gpu_smoke_text \
+  --restart-from-stage evaluate_model \
+  --resume-confirm-completed \
+  --eval-enable-llm-judge
+```
+
+The judge reuses the configured `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` path. It asks for minimal categorical JSON:
+
+```json
+{
+  "verdict": "pass|minor_issue|major_failure",
+  "categories": ["wrong_fact|missing_key_point|hallucination|irrelevant|format|language|unsafe|other"]
+}
+```
+
+When judge is enabled, deterministic string-similarity failures are kept as diagnostics, but the judge gate is the primary quality signal.
+
+## Hugging Face Uploads
+
+Set these in `.env` to publish artifacts from `full_agentic`:
+
+```bash
+HF_TOKEN=hf_...
+HF_DATASET_REPO=horde-agent-kazakhstan-sft
+HF_ADAPTER_REPO=horde-agent-kazakhstan-lora
+```
+
+`HF_USERNAME` is optional. If it is omitted, the Hub username is resolved from `HF_TOKEN`. If a repo value already includes an owner, for example `my-org/horde-agent-kazakhstan-lora`, that owner is used.
+
+Adapter upload happens only after real `train_model` succeeds. `debug_stub_train` skips adapter upload to avoid publishing dummy adapters. Dataset upload happens after `build_sft_dataset` succeeds. Upload repo ids or upload errors are recorded in agent artifacts and the final report.
+
 ## Resume and Restart
 
 `full_agentic` writes state into `RUN_DIR`. If a run directory already contains `agent_state.json`, the controller resumes from it.
@@ -175,7 +212,8 @@ Local artifacts are written under `RUN_DIR`:
 - `collect/`: raw collection output and metadata.
 - `sft/`: annotations and SFT JSONL.
 - `dataset/`: Hugging Face train/validation dataset.
-- `eval/`: evaluation metrics and failure analysis.
+- `eval_metrics.json`, `predictions.jsonl`, `failures.jsonl`, `cluster_preview.json`: validation outputs, deterministic diagnostics, and clustered failures.
+- `judge_results.jsonl`, `judge_summary.json`: present when LLM-as-judge is enabled.
 - Final report path is logged at the end when report generation succeeds.
 
 LangSmith traces are available in the project configured by `LANGSMITH_PROJECT` or `horde-agent`. Each run has a root span and one child span per stage.
@@ -208,5 +246,5 @@ Live tests such as `tests/test_live_pipeline.py` and `tests/test_full_live_pipel
 
 - `full_agentic` is constrained-agentic, not a general planner. It chooses among legal graph actions and bounded recovery deltas.
 - Image training is newer than text training. Validate the chosen image-text model, chat template, processor behavior, and LoRA target modules on a tiny GPU run first.
-- LLM-as-judge is optional and should not be the only eval signal. Train-health checks and deterministic validation metrics still run without it.
+- LLM-as-judge is optional. When enabled, it is the primary semantic quality gate, while train-health checks and deterministic validation metrics still run as diagnostics.
 - CPU debug mode does not prove GPU training stability. It only validates orchestration, artifacts, state, and reporting.

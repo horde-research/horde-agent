@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -20,6 +22,8 @@ from core.agentic.validators import (
     validate_taxonomy_output,
     validate_training_output,
 )
+
+logger = logging.getLogger(__name__)
 
 StageExecutor = Callable[[PipelineState, ActionRequest], ActionResult]
 
@@ -205,6 +209,12 @@ class AgenticToolAdapter:
 
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
+            hub_info = {}
+            if report.passed:
+                hub_info = _push_hf_outputs_if_configured(
+                    cfg,
+                    dataset_path=output.get("sft_path"),
+                )
             return ActionResult(
                 action_type=ActionType.BUILD_SFT_DATASET,
                 status=_status_from_report(report),
@@ -215,10 +225,11 @@ class AgenticToolAdapter:
                     "annotations_path": output.get("annotations_path"),
                     "num_sft_examples": output.get("num_examples"),
                     "sft_prompt_preset": output.get("prompt_preset"),
+                    **hub_info,
                 },
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output=output,
+                raw_output={**output, **hub_info},
             )
         except Exception as exc:
             return _failed_result(ActionType.BUILD_SFT_DATASET, exc)
@@ -288,6 +299,16 @@ class AgenticToolAdapter:
                     },
                 )
             report = validate_training_output(output)
+            hub_info = {}
+            if report.passed:
+                if _as_bool(cfg.get("debug_stub_train", False)):
+                    if cfg.get("hf_adapter_repo"):
+                        hub_info["hf_adapter_upload_skipped"] = "debug_stub_train"
+                else:
+                    hub_info = _push_hf_outputs_if_configured(
+                        cfg,
+                        adapter_path=output.get("adapter_path"),
+                    )
             return ActionResult(
                 action_type=ActionType.TRAIN_MODEL,
                 status=_status_from_report(report),
@@ -296,10 +317,11 @@ class AgenticToolAdapter:
                     "train_log_paths": output.get("log_paths"),
                     "train_metrics": output.get("metrics"),
                     "iterations": [output.get("iteration_record")] if output.get("iteration_record") else [],
+                    **hub_info,
                 },
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output=output,
+                raw_output={**output, **hub_info},
             )
         except Exception as exc:
             return _failed_result(ActionType.TRAIN_MODEL, exc)
@@ -388,14 +410,8 @@ class AgenticToolAdapter:
                     "iterations": state.artifacts.get("iterations") or [],
                     "failures_path": state.artifacts.get("failures_path") or "",
                     "cluster_preview": state.artifacts.get("cluster_preview") or {},
-                    "error_analysis": {
-                        "taxonomy": state.artifacts.get("taxonomy"),
-                        "collection": state.artifacts.get("collection_metadata"),
-                        "sft_generation": {
-                            "sft_path": state.artifacts.get("sft_path"),
-                            "num_sft_examples": state.artifacts.get("num_sft_examples"),
-                        },
-                    },
+                    "pipeline_summary": _build_pipeline_summary(state),
+                    "error_analysis": _build_eval_error_analysis(state),
                 }
             )
             output = {"report_path": report_path}
@@ -545,6 +561,199 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _push_hf_outputs_if_configured(
+    config: Mapping[str, Any],
+    *,
+    dataset_path: Any = None,
+    adapter_path: Any = None,
+) -> Dict[str, str]:
+    token = _stripped(config.get("hf_token"))
+    if token and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = token
+
+    username = _stripped(config.get("hf_username")) or None
+    pushed: Dict[str, str] = {}
+
+    dataset_repo = _stripped(config.get("hf_dataset_repo"))
+    if dataset_path and dataset_repo:
+        try:
+            from core.hf_hub import push_dataset
+
+            repo_name, repo_username = _hf_repo_name_and_username(dataset_repo, username)
+            pushed["dataset_repo_id"] = push_dataset(str(dataset_path), repo_name, username=repo_username)
+            logger.info("SFT dataset pushed to HF Hub: %s", pushed["dataset_repo_id"])
+        except Exception as exc:
+            pushed["hf_dataset_upload_error"] = f"{type(exc).__name__}: {exc}"
+            logger.error("Failed to push SFT dataset to HF Hub: %s", exc)
+
+    adapter_repo = _stripped(config.get("hf_adapter_repo"))
+    if adapter_path and adapter_repo:
+        try:
+            from core.hf_hub import push_adapter
+
+            repo_name, repo_username = _hf_repo_name_and_username(adapter_repo, username)
+            pushed["adapter_repo_id"] = push_adapter(str(adapter_path), repo_name, username=repo_username)
+            logger.info("LoRA adapter pushed to HF Hub: %s", pushed["adapter_repo_id"])
+        except Exception as exc:
+            pushed["hf_adapter_upload_error"] = f"{type(exc).__name__}: {exc}"
+            logger.error("Failed to push LoRA adapter to HF Hub: %s", exc)
+
+    return pushed
+
+
+def _hf_repo_name_and_username(repo_value: str, username: str | None) -> tuple[str, str | None]:
+    if "/" not in repo_value:
+        return repo_value, username
+    repo_username, repo_name = repo_value.split("/", 1)
+    return repo_name, username or repo_username
+
+
+def _stripped(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
+    metadata = state.artifacts.get("collection_metadata") or {}
+    eval_metrics = state.artifacts.get("eval_metrics") or {}
+    return {
+        "taxonomy_summary": _summarize_taxonomy(
+            state.artifacts.get("taxonomy"),
+            selected_queries=state.artifacts.get("search_queries"),
+        ),
+        "collection_summary": {
+            "provider": metadata.get("provider"),
+            "num_samples": state.artifacts.get("num_samples"),
+            "collected_at": metadata.get("collected_at"),
+            "raw_result_path": metadata.get("raw_result_path"),
+        },
+        "sft_summary": {
+            "mode": state.artifacts.get("sft_mode") or state.artifacts.get("training_modality"),
+            "sft_path": state.artifacts.get("sft_path"),
+            "num_examples": state.artifacts.get("num_sft_examples"),
+            "dataset_repo_id": state.artifacts.get("dataset_repo_id"),
+            "hf_dataset_upload_error": state.artifacts.get("hf_dataset_upload_error"),
+        },
+        "training_summary": {
+            "adapter_path": state.artifacts.get("adapter_path"),
+            "adapter_repo_id": state.artifacts.get("adapter_repo_id"),
+            "hf_adapter_upload_error": state.artifacts.get("hf_adapter_upload_error"),
+            "hf_adapter_upload_skipped": state.artifacts.get("hf_adapter_upload_skipped"),
+        },
+        "eval_summary": {
+            "failure_rate": eval_metrics.get("failure_rate") if isinstance(eval_metrics, dict) else None,
+            "num_predictions": eval_metrics.get("num_predictions") if isinstance(eval_metrics, dict) else None,
+            "predictions_path": state.artifacts.get("predictions_path"),
+            "failures_path": state.artifacts.get("failures_path"),
+        },
+    }
+
+
+def _summarize_taxonomy(taxonomy: Any, *, selected_queries: Any = None) -> Dict[str, Any]:
+    if not isinstance(taxonomy, dict):
+        return {
+            "num_categories": 0,
+            "num_subcategories": 0,
+            "num_generated_queries": 0,
+            "num_selected_queries": _list_len(selected_queries),
+            "categories": [],
+        }
+
+    category_subcategories = taxonomy.get("category_subcategories") or {}
+    if not isinstance(category_subcategories, Mapping):
+        category_subcategories = {}
+    categories = taxonomy.get("categories") or []
+    category_rows: list[dict[str, Any]] = []
+
+    for category in categories:
+        category_name = _name_from_item(category)
+        if not category_name:
+            continue
+        subcategory_names = [
+            name
+            for name in (_name_from_item(item) for item in category_subcategories.get(category_name, []))
+            if name
+        ]
+        category_rows.append({"name": category_name, "subcategories": subcategory_names})
+
+    if not category_rows and isinstance(category_subcategories, dict):
+        for category_name, subcategories in category_subcategories.items():
+            subcategory_names = [
+                name
+                for name in (_name_from_item(item) for item in _iterable_items(subcategories))
+                if name
+            ]
+            category_rows.append({"name": str(category_name), "subcategories": subcategory_names})
+
+    return {
+        "num_categories": len(category_rows),
+        "num_subcategories": sum(len(row["subcategories"]) for row in category_rows),
+        "num_generated_queries": _count_generated_queries(taxonomy),
+        "num_selected_queries": _list_len(selected_queries),
+        "categories": category_rows,
+    }
+
+
+def _build_eval_error_analysis(state: PipelineState) -> Dict[str, Any]:
+    cluster_preview = state.artifacts.get("cluster_preview") or {}
+    clusters = cluster_preview.get("clusters") if isinstance(cluster_preview, dict) else []
+    eval_metrics = state.artifacts.get("eval_metrics") or {}
+    training_health = state.artifacts.get("training_health")
+    judge_summary = state.artifacts.get("judge_summary")
+    training_health_has_issue = _gate_has_issue(training_health)
+    judge_has_issue = _gate_has_issue(judge_summary)
+
+    if not clusters and not training_health_has_issue and not judge_has_issue:
+        return {"status": "No evaluation failures detected."}
+
+    analysis = {
+        "failure_clusters": clusters or [],
+        "failure_rate": eval_metrics.get("failure_rate") if isinstance(eval_metrics, dict) else None,
+    }
+    if training_health_has_issue:
+        analysis["training_health"] = training_health
+    if judge_has_issue:
+        analysis["judge_summary"] = judge_summary
+    return analysis
+
+
+def _gate_has_issue(payload: Any) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    gate_status = str(payload.get("gate_status") or "").strip().lower()
+    return gate_status in {"repair", "fail"} or bool(payload.get("blocking_issues"))
+
+
+def _count_generated_queries(taxonomy: Mapping[str, Any]) -> int:
+    nested = taxonomy.get("category_subcategory_queries") or {}
+    if not isinstance(nested, Mapping):
+        return 0
+    total = 0
+    for subcategories in nested.values():
+        if not isinstance(subcategories, Mapping):
+            continue
+        for queries in subcategories.values():
+            total += _list_len(queries)
+    return total
+
+
+def _name_from_item(item: Any) -> str:
+    if isinstance(item, Mapping):
+        return str(item.get("name") or "").strip()
+    return str(item or "").strip()
+
+
+def _iterable_items(value: Any) -> list[Any]:
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+        return list(value)
+    return []
+
+
+def _list_len(value: Any) -> int:
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+        return len(list(value))
+    return 0
 
 
 def _debug_train_output(

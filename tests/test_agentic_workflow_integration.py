@@ -172,6 +172,13 @@ def test_full_agentic_workflow_runs_known_graph_with_image_collection(tmp_path: 
     sft_config = tools["build_sft_dataset"].calls[0]["args"][0]
     assert sft_config["mode"] == "image"
     assert sft_config["input_dir"] == str(images_dir)
+    report_payload = tools["reporting"].calls[0]
+    taxonomy_summary = report_payload["pipeline_summary"]["taxonomy_summary"]
+    assert taxonomy_summary["num_categories"] == 1
+    assert taxonomy_summary["num_subcategories"] == 1
+    assert taxonomy_summary["categories"] == [{"name": "food", "subcategories": ["dishes"]}]
+    assert report_payload["error_analysis"] == {"status": "No evaluation failures detected."}
+    assert "taxonomy" not in report_payload["error_analysis"]
 
 
 def test_full_agentic_debug_flow_stubs_train_and_eval_but_generates_report(tmp_path: Path) -> None:
@@ -256,7 +263,11 @@ def test_full_agentic_debug_flow_stubs_train_and_eval_but_generates_report(tmp_p
     assert result["termination_reason"] == "full_graph_complete"
     report_path = Path(result["artifacts"]["report_path"])
     assert report_path.exists()
-    assert "Training Iterations" in report_path.read_text(encoding="utf-8")
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Training Iterations" in report_text
+    assert "## Pipeline Summary" in report_text
+    assert "- food (1 subcategories)" in report_text
+    assert '"status": "No evaluation failures detected."' in report_text
     assert Path(result["artifacts"]["adapter_path"]).exists()
     assert Path(result["artifacts"]["predictions_path"]).exists()
 

@@ -214,6 +214,7 @@ class LangGraphAgentRuntime:
             _compact_json(report.metrics if report else result.metrics),
             sorted(result.artifacts.keys()),
         )
+        _log_eval_failure_details(result, report)
         if report:
             logger.info(
                 "Agent: '%s' is done. Gate=%s, decision=%s, issues=%s. I will inspect the state and choose the next step.",
@@ -298,3 +299,92 @@ def _compact_json(value: Any) -> str:
     if value in (None, {}, []):
         return "{}" if isinstance(value, dict) or value is None else "[]"
     return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+
+
+def _log_eval_failure_details(result: ActionResult, report: QualityReport | None) -> None:
+    if result.action_type != ActionType.EVALUATE_MODEL or not report:
+        return
+    if report.passed and report.gate_status == "pass":
+        return
+
+    artifacts = result.artifacts or {}
+    eval_metrics = _as_mapping(artifacts.get("eval_metrics"))
+    report_metrics = _as_mapping(report.metrics)
+    training_health = _as_mapping(artifacts.get("training_health")) or _as_mapping(
+        eval_metrics.get("training_health")
+    )
+    training_metrics = _as_mapping(training_health.get("metrics"))
+    judge = _as_mapping(artifacts.get("judge_summary")) or _as_mapping(eval_metrics.get("judge"))
+
+    details = _drop_empty(
+        {
+            "failure_rate": eval_metrics.get("failure_rate", report_metrics.get("failure_rate")),
+            "num_failures": eval_metrics.get("num_failures"),
+            "num_predictions": eval_metrics.get("num_predictions"),
+            "avg_similarity": eval_metrics.get("avg_similarity"),
+            "failure_reason_counts": eval_metrics.get("failure_reason_counts"),
+            "clusters": _cluster_summary(artifacts.get("cluster_preview")),
+            "training_health": _drop_empty(
+                {
+                    "gate": training_health.get("gate_status"),
+                    "blocking_issues": training_health.get("blocking_issues"),
+                    "warnings": training_health.get("warnings"),
+                    "last_step": training_metrics.get("last_step"),
+                    "expected_steps": training_metrics.get("expected_steps"),
+                    "step_completion_ratio": training_metrics.get("step_completion_ratio"),
+                    "first_train_loss": training_metrics.get("first_train_loss"),
+                    "last_train_loss": training_metrics.get("last_train_loss"),
+                    "best_eval_loss": training_metrics.get("best_eval_loss"),
+                    "max_grad_norm": training_metrics.get("max_grad_norm"),
+                    "loss_trend": training_metrics.get("loss_trend"),
+                }
+            ),
+            "judge": _drop_empty(
+                {
+                    "enabled": judge.get("enabled"),
+                    "gate": judge.get("gate_status"),
+                    "major_failure_rate": judge.get("major_failure_rate"),
+                    "major_failure_count": judge.get("major_failure_count"),
+                    "warning_count": judge.get("warning_count"),
+                    "failure_category_counts": judge.get("failure_category_counts"),
+                }
+            ),
+            "paths": _drop_empty(
+                {
+                    "eval_metrics": artifacts.get("eval_metrics_path"),
+                    "failures": artifacts.get("failures_path"),
+                    "predictions": artifacts.get("predictions_path"),
+                }
+            ),
+        }
+    )
+    if details:
+        logger.info("Agent eval failure details: %s", _compact_json(details))
+
+
+def _as_mapping(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _cluster_summary(cluster_preview: Any) -> list[dict[str, Any]]:
+    preview = _as_mapping(cluster_preview)
+    clusters = preview.get("clusters")
+    if not isinstance(clusters, list):
+        return []
+    summary: list[dict[str, Any]] = []
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        item = _drop_empty(
+            {
+                "label": cluster.get("label"),
+                "count": cluster.get("count"),
+            }
+        )
+        if item:
+            summary.append(item)
+    return summary
+
+
+def _drop_empty(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
