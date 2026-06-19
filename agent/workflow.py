@@ -197,6 +197,13 @@ class WorkflowRunner:
             "image_min_height": cfg.image_min_height,
             "image_context_size": cfg.image_context_size,
             "image_taxonomy": taxonomy_out.get("image_taxonomy"),
+            "text_filter_enable": cfg.text_filter_enable,
+            "text_filter_min_chars": cfg.text_filter_min_chars,
+            "text_filter_min_words": cfg.text_filter_min_words,
+            "text_filter_min_unique_word_ratio": cfg.text_filter_min_unique_word_ratio,
+            "text_filter_shingle_threshold": cfg.text_filter_shingle_threshold,
+            "text_filter_max_near_duplicate_items": cfg.text_filter_max_near_duplicate_items,
+            "text_filter_max_reported_rows": cfg.text_filter_max_reported_rows,
         })
         raw_data_path = collect_out["data_path"]
         logger.info("Collected %d samples -> %s", collect_out["num_samples"], raw_data_path)

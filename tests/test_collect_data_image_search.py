@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from datasets import load_from_disk
+
 from tools.collect_data.image_search import (
     _image_extension_from_content_type,
     _image_extension_from_url,
@@ -121,6 +123,54 @@ def test_collect_data_uses_serper_image_search_by_default(
     assert result["metadata"]["image_search_results_per_query"] == 7
     assert result["metadata"]["num_images"] == 1
     assert Path(result["metadata"]["images_index"]).exists()
+
+
+def test_collect_data_filters_text_rows_and_writes_report(monkeypatch, tmp_path: Path) -> None:
+    good_text = " ".join(f"kazakh_food_term_{idx}" for idx in range(80))
+
+    async def fake_search_and_scrape(**kwargs: Any) -> dict[str, list[dict[str, str]]]:
+        return {
+            "kazakh food": [
+                {
+                    "url": "https://example.com/article",
+                    "google_snippet": "snippet",
+                    "full_text": good_text,
+                },
+                {
+                    "url": "https://example.com/short",
+                    "google_snippet": "snippet",
+                    "full_text": "too short",
+                },
+                {
+                    "url": "https://example.com/copy",
+                    "google_snippet": "snippet",
+                    "full_text": good_text,
+                },
+            ]
+        }
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr("tools.collect_data.tool._search_and_scrape", fake_search_and_scrape)
+
+    result = CollectDataTool().execute(
+        {
+            "queries": ["kazakh food"],
+            "run_dir": str(tmp_path),
+            "text_filter_min_chars": 20,
+            "text_filter_min_words": 5,
+        }
+    )
+
+    report_path = Path(result["metadata"]["text_filter_report_path"])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    dataset = load_from_disk(result["data_path"])
+
+    assert len(dataset) == 1
+    assert dataset[0]["text"] == good_text
+    assert report["num_input"] == 3
+    assert report["num_kept"] == 1
+    assert report["removed_reason_counts"] == {"too_short_chars": 1, "exact_duplicate_text": 1}
+    assert result["metadata"]["num_text_rows_removed_by_filter"] == 2
 
 
 def test_collect_data_uses_image_taxonomy_query_specs(

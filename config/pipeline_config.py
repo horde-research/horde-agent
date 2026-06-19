@@ -78,6 +78,13 @@ class PipelineConfig(BaseModel):
     text_quality_shingle_threshold: float = 0.85
     text_quality_max_shingle_items: int = 1000
     text_quality_max_reported_pairs: int = 50
+    text_filter_enable: bool = True
+    text_filter_min_chars: int = 300
+    text_filter_min_words: int = 40
+    text_filter_min_unique_word_ratio: float = 0.15
+    text_filter_shingle_threshold: float = 0.90
+    text_filter_max_near_duplicate_items: int = 1000
+    text_filter_max_reported_rows: int = 50
 
     # ── SFT annotation ───────────────────────────────────────────────────────
     # Primary modality switch for examples that flow into dataset/train.
@@ -180,6 +187,13 @@ class PipelineConfig(BaseModel):
             "text_quality_shingle_threshold": os.getenv("TEXT_QUALITY_SHINGLE_THRESHOLD"),
             "text_quality_max_shingle_items": os.getenv("TEXT_QUALITY_MAX_SHINGLE_ITEMS"),
             "text_quality_max_reported_pairs": os.getenv("TEXT_QUALITY_MAX_REPORTED_PAIRS"),
+            "text_filter_enable": os.getenv("TEXT_FILTER_ENABLE"),
+            "text_filter_min_chars": os.getenv("TEXT_FILTER_MIN_CHARS"),
+            "text_filter_min_words": os.getenv("TEXT_FILTER_MIN_WORDS"),
+            "text_filter_min_unique_word_ratio": os.getenv("TEXT_FILTER_MIN_UNIQUE_WORD_RATIO"),
+            "text_filter_shingle_threshold": os.getenv("TEXT_FILTER_SHINGLE_THRESHOLD"),
+            "text_filter_max_near_duplicate_items": os.getenv("TEXT_FILTER_MAX_NEAR_DUPLICATE_ITEMS"),
+            "text_filter_max_reported_rows": os.getenv("TEXT_FILTER_MAX_REPORTED_ROWS"),
             "training_modality": os.getenv("TRAINING_MODALITY"),
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
@@ -257,6 +271,18 @@ class PipelineConfig(BaseModel):
             raise ValueError("text_quality_max_shingle_items must be >= 0.")
         if int(self.text_quality_max_reported_pairs) < 0:
             raise ValueError("text_quality_max_reported_pairs must be >= 0.")
+        if int(self.text_filter_min_chars) < 0:
+            raise ValueError("text_filter_min_chars must be >= 0.")
+        if int(self.text_filter_min_words) < 0:
+            raise ValueError("text_filter_min_words must be >= 0.")
+        if not 0.0 <= float(self.text_filter_min_unique_word_ratio) <= 1.0:
+            raise ValueError("text_filter_min_unique_word_ratio must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.text_filter_shingle_threshold) <= 1.0:
+            raise ValueError("text_filter_shingle_threshold must be between 0.0 and 1.0.")
+        if int(self.text_filter_max_near_duplicate_items) < 0:
+            raise ValueError("text_filter_max_near_duplicate_items must be >= 0.")
+        if int(self.text_filter_max_reported_rows) < 0:
+            raise ValueError("text_filter_max_reported_rows must be >= 0.")
         return self
 
     def train_config_dict(self) -> dict:

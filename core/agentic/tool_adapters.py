@@ -140,6 +140,16 @@ class AgenticToolAdapter:
                     "image_dedup_batch_size": cfg.get("image_dedup_batch_size", 32),
                     "image_dedup_max_reported_pairs": cfg.get("image_dedup_max_reported_pairs", 100),
                     "image_dedup_device": cfg.get("image_dedup_device"),
+                    "text_filter_enable": cfg.get("text_filter_enable", True),
+                    "text_filter_min_chars": cfg.get("text_filter_min_chars", 300),
+                    "text_filter_min_words": cfg.get("text_filter_min_words", 40),
+                    "text_filter_min_unique_word_ratio": cfg.get("text_filter_min_unique_word_ratio", 0.15),
+                    "text_filter_shingle_threshold": cfg.get("text_filter_shingle_threshold", 0.90),
+                    "text_filter_max_near_duplicate_items": cfg.get(
+                        "text_filter_max_near_duplicate_items",
+                        1000,
+                    ),
+                    "text_filter_max_reported_rows": cfg.get("text_filter_max_reported_rows", 50),
                 }
             )
             report = validate_collection_output(output, collect_images=collect_images)
@@ -153,6 +163,12 @@ class AgenticToolAdapter:
                 **text_quality_artifacts,
             }
             for key in (
+                "text_filter_report_path",
+                "text_filter_summary",
+                "text_filter_enabled",
+                "num_text_rows_before_filter",
+                "num_text_rows_after_filter",
+                "num_text_rows_removed_by_filter",
                 "images_dir",
                 "images_index",
                 "num_images",

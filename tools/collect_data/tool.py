@@ -21,6 +21,12 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from tools.base_tool import BaseTool
+from core.data.text_filter import (
+    disabled_text_filter_report,
+    filter_text_rows,
+    summarize_text_filter,
+    write_text_filter_report,
+)
 from core.data.image_dedup import (
     DEFAULT_SSCD_MODEL_PATH,
     DEFAULT_SSCD_MODEL_URL,
@@ -110,6 +116,27 @@ class CollectDataTool(BaseTool):
         raw_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
         text_rows = _extract_text_rows(raw)
+        text_filter_report_path = run_dir / "text_filter_report.json"
+        if _as_bool(config.get("text_filter_enable", True)):
+            text_rows, text_filter_report = filter_text_rows(
+                text_rows,
+                min_chars=_int_config(config.get("text_filter_min_chars"), 300),
+                min_words=_int_config(config.get("text_filter_min_words"), 40),
+                min_unique_word_ratio=_float_config(
+                    config.get("text_filter_min_unique_word_ratio"),
+                    0.15,
+                ),
+                shingle_threshold=_float_config(config.get("text_filter_shingle_threshold"), 0.90),
+                max_near_duplicate_items=_int_config(
+                    config.get("text_filter_max_near_duplicate_items"),
+                    1000,
+                ),
+                max_reported_rows=_int_config(config.get("text_filter_max_reported_rows"), 50),
+            )
+        else:
+            text_filter_report = disabled_text_filter_report(text_rows)
+        write_text_filter_report(text_filter_report, text_filter_report_path)
+        text_rows_after_filter = len(text_rows)
         if max_samples and max_samples > 0:
             text_rows = text_rows[:max_samples]
         if not text_rows:
@@ -229,6 +256,12 @@ class CollectDataTool(BaseTool):
                 "run_dir": str(run_dir),
                 "raw_result_path": str(raw_path),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
+                "text_filter_report_path": str(text_filter_report_path),
+                "text_filter_summary": summarize_text_filter(text_filter_report),
+                "text_filter_enabled": bool(text_filter_report.get("enabled")),
+                "num_text_rows_before_filter": text_filter_report.get("num_input"),
+                "num_text_rows_after_filter": text_rows_after_filter,
+                "num_text_rows_removed_by_filter": text_filter_report.get("num_removed"),
                 **images_meta,
             },
         }
@@ -376,12 +409,10 @@ async def _scrape_page(
 
 def _extract_text_rows(raw: Dict[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
-    seen: set[str] = set()
     for query, pages in raw.items():
         for page in pages:
             full = (page.get("full_text") or "").strip()
-            if full and full not in seen:
-                seen.add(full)
+            if full:
                 url = str(page.get("url") or "").strip()
                 source_id = _source_id(url, full)
                 rows.append(
@@ -434,3 +465,17 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _int_config(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_config(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
