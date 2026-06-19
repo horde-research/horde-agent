@@ -13,6 +13,13 @@ from typing import Any, Callable, Dict
 from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
 from core.agentic.coverage import assess_coverage_and_refine_queries
 from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
+from core.data.text_quality import (
+    DEFAULT_EMBEDDING_MODEL,
+    records_from_serper_raw,
+    records_from_sft_jsonl,
+    summarize_text_quality,
+    write_text_quality_report,
+)
 from core.agentic.validators import (
     validate_collection_output,
     validate_dataset_output,
@@ -126,17 +133,42 @@ class AgenticToolAdapter:
                     "image_taxonomy": state.artifacts.get("image_taxonomy") or cfg.get("image_taxonomy"),
                     "image_query_specs": cfg.get("image_query_specs"),
                     "image_search_queries": cfg.get("image_search_queries"),
+                    "image_dedup_enable": cfg.get("image_dedup_enable", False),
+                    "image_dedup_threshold": cfg.get("image_dedup_threshold", 0.90),
+                    "image_dedup_model_path": cfg.get("image_dedup_model_path"),
+                    "image_dedup_model_url": cfg.get("image_dedup_model_url"),
+                    "image_dedup_batch_size": cfg.get("image_dedup_batch_size", 32),
+                    "image_dedup_max_reported_pairs": cfg.get("image_dedup_max_reported_pairs", 100),
+                    "image_dedup_device": cfg.get("image_dedup_device"),
                 }
             )
             report = validate_collection_output(output, collect_images=collect_images)
             metadata = output.get("metadata") or {}
+            text_quality_artifacts = _write_collection_text_quality_artifacts(state, metadata)
             artifacts = {
                 "raw_data_path": output.get("data_path"),
                 "data_path": output.get("data_path"),
                 "num_samples": output.get("num_samples"),
                 "collection_metadata": metadata,
+                **text_quality_artifacts,
             }
-            for key in ("images_dir", "images_index", "num_images"):
+            for key in (
+                "images_dir",
+                "images_index",
+                "num_images",
+                "raw_images_index",
+                "image_dedup_report_path",
+                "image_dedup_enabled",
+                "image_dedup_method",
+                "image_dedup_threshold",
+                "image_dedup_model_path",
+                "image_dedup_model_url",
+                "image_dedup_device",
+                "image_dedup_downloaded_model",
+                "num_images_before_dedup",
+                "num_images_removed_by_dedup",
+                "num_image_dedup_clusters",
+            ):
                 if key in metadata:
                     artifacts[key] = metadata[key]
             return ActionResult(
@@ -209,6 +241,7 @@ class AgenticToolAdapter:
 
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
+            text_quality_artifacts = _write_sft_text_quality_artifacts(state, output)
             hub_info = {}
             if report.passed:
                 hub_info = _push_hf_outputs_if_configured(
@@ -225,6 +258,7 @@ class AgenticToolAdapter:
                     "annotations_path": output.get("annotations_path"),
                     "num_sft_examples": output.get("num_examples"),
                     "sft_prompt_preset": output.get("prompt_preset"),
+                    **text_quality_artifacts,
                     **hub_info,
                 },
                 metrics=report.metrics,
@@ -337,8 +371,10 @@ class AgenticToolAdapter:
                 raise ValueError("adapter_path artifact is required before evaluation.")
             if not data_path:
                 raise ValueError("dataset data_path is required before evaluation.")
+            eval_attempt = _stage_attempt(state, ActionType.EVALUATE_MODEL)
+            eval_run_dir = Path(state.run_dir) / "eval" / f"attempt_{eval_attempt}"
             eval_config = {
-                "run_dir": state.run_dir,
+                "run_dir": str(eval_run_dir),
                 "hf_model_id": cfg.get("hf_model_id"),
                 "split": eval_split,
                 "max_samples": cfg.get("eval_max_samples", 64),
@@ -359,7 +395,7 @@ class AgenticToolAdapter:
             }
             if _as_bool(cfg.get("debug_stub_eval", False)):
                 output = _debug_eval_output(
-                    run_dir=state.run_dir,
+                    run_dir=str(eval_run_dir),
                     data_path=str(data_path),
                     split=str(eval_split),
                     max_samples=int(eval_config["max_samples"] or 64),
@@ -376,6 +412,8 @@ class AgenticToolAdapter:
                 action_type=ActionType.EVALUATE_MODEL,
                 status=_status_from_report(report),
                 artifacts={
+                    "eval_attempt": eval_attempt,
+                    "eval_attempt_dir": str(eval_run_dir),
                     "predictions_path": output.get("predictions_path"),
                     "failures_path": output.get("failures_path"),
                     "cluster_preview": output.get("cluster_preview"),
@@ -551,6 +589,84 @@ def _train_config_dict(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _write_collection_text_quality_artifacts(
+    state: PipelineState,
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    raw_result_path = metadata.get("raw_result_path")
+    if not raw_result_path:
+        return {}
+    out_path = Path(state.run_dir) / "collect" / "text_quality.json"
+    try:
+        report = write_text_quality_report(
+            records_from_serper_raw(str(raw_result_path)),
+            out_path,
+            source="collection",
+            **_text_quality_config(state.config),
+        )
+    except Exception as exc:
+        logger.warning("Failed to write collection text quality report: %s", exc)
+        return {}
+    return {
+        "collection_text_quality_path": str(out_path),
+        "collection_text_quality_summary": summarize_text_quality(report),
+    }
+
+
+def _write_sft_text_quality_artifacts(
+    state: PipelineState,
+    output: Mapping[str, Any],
+) -> Dict[str, Any]:
+    sft_path = output.get("sft_path")
+    if not sft_path:
+        return {}
+    out_path = Path(state.run_dir) / "sft" / "text_quality.json"
+    try:
+        report = write_text_quality_report(
+            records_from_sft_jsonl(str(sft_path)),
+            out_path,
+            source="sft",
+            **_text_quality_config(state.config),
+        )
+    except Exception as exc:
+        logger.warning("Failed to write SFT text quality report: %s", exc)
+        return {}
+    return {
+        "sft_text_quality_path": str(out_path),
+        "sft_text_quality_summary": summarize_text_quality(report),
+    }
+
+
+def _text_quality_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "enable_embeddings": _as_bool(config.get("text_quality_enable_embeddings", False)),
+        "embedding_model": _stripped(config.get("text_quality_embedding_model")) or DEFAULT_EMBEDDING_MODEL,
+        "embedding_threshold": _float_value(config.get("text_quality_embedding_threshold"), 0.93),
+        "max_embedding_items": _int_value(config.get("text_quality_max_embedding_items"), 256),
+        "shingle_threshold": _float_value(config.get("text_quality_shingle_threshold"), 0.85),
+        "max_shingle_items": _int_value(config.get("text_quality_max_shingle_items"), 1000),
+        "max_reported_pairs": _int_value(config.get("text_quality_max_reported_pairs"), 50),
+    }
+
+
+def _stage_attempt(state: PipelineState, stage: ActionType) -> int:
+    return sum(1 for result in state.result_history if result.get("action_type") == stage.value)
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _training_modality(config: Mapping[str, Any]) -> str:
     return str(config.get("training_modality") or config.get("sft_mode") or "text").strip().lower()
 
@@ -627,11 +743,29 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "num_samples": state.artifacts.get("num_samples"),
             "collected_at": metadata.get("collected_at"),
             "raw_result_path": metadata.get("raw_result_path"),
+            "text_quality_path": state.artifacts.get("collection_text_quality_path"),
+            "text_quality": state.artifacts.get("collection_text_quality_summary"),
+            "image_dedup": {
+                "enabled": state.artifacts.get("image_dedup_enabled"),
+                "method": state.artifacts.get("image_dedup_method"),
+                "threshold": state.artifacts.get("image_dedup_threshold"),
+                "num_before": state.artifacts.get("num_images_before_dedup"),
+                "num_after": state.artifacts.get("num_images"),
+                "num_removed": state.artifacts.get("num_images_removed_by_dedup"),
+                "num_clusters": state.artifacts.get("num_image_dedup_clusters"),
+                "report_path": state.artifacts.get("image_dedup_report_path"),
+                "raw_images_index": state.artifacts.get("raw_images_index"),
+                "model_path": state.artifacts.get("image_dedup_model_path"),
+                "downloaded_model": state.artifacts.get("image_dedup_downloaded_model"),
+                "device": state.artifacts.get("image_dedup_device"),
+            },
         },
         "sft_summary": {
             "mode": state.artifacts.get("sft_mode") or state.artifacts.get("training_modality"),
             "sft_path": state.artifacts.get("sft_path"),
             "num_examples": state.artifacts.get("num_sft_examples"),
+            "text_quality_path": state.artifacts.get("sft_text_quality_path"),
+            "text_quality": state.artifacts.get("sft_text_quality_summary"),
             "dataset_repo_id": state.artifacts.get("dataset_repo_id"),
             "hf_dataset_upload_error": state.artifacts.get("hf_dataset_upload_error"),
         },
@@ -642,6 +776,8 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "hf_adapter_upload_skipped": state.artifacts.get("hf_adapter_upload_skipped"),
         },
         "eval_summary": {
+            "attempt": state.artifacts.get("eval_attempt"),
+            "attempt_dir": state.artifacts.get("eval_attempt_dir"),
             "failure_rate": eval_metrics.get("failure_rate") if isinstance(eval_metrics, dict) else None,
             "num_predictions": eval_metrics.get("num_predictions") if isinstance(eval_metrics, dict) else None,
             "predictions_path": state.artifacts.get("predictions_path"),
@@ -828,7 +964,7 @@ def _debug_eval_output(
     max_samples: int,
     failure_rate: float,
 ) -> Dict[str, Any]:
-    eval_dir = Path(run_dir) / "debug_stub" / "eval"
+    eval_dir = Path(run_dir)
     eval_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = eval_dir / "predictions.jsonl"
     failures_path = eval_dir / "failures.jsonl"

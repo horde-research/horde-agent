@@ -20,6 +20,12 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from tools.base_tool import BaseTool
+from core.data.image_dedup import (
+    DEFAULT_SSCD_MODEL_PATH,
+    DEFAULT_SSCD_MODEL_URL,
+    deduplicate_image_records,
+    write_image_dedup_report,
+)
 from tools.collect_data.image_search import collect_images_from_serper
 from tools.collect_data.images import collect_images
 from tools.generate_taxonomy.image_taxonomy import flatten_image_query_specs
@@ -87,6 +93,7 @@ class CollectDataTool(BaseTool):
         image_search_results_per_query = int(
             config.get("image_search_results_per_query", results_per_query)
         )
+        image_dedup_enable = _as_bool(config.get("image_dedup_enable", False))
 
         raw = asyncio.run(
             _search_and_scrape(
@@ -148,6 +155,41 @@ class CollectDataTool(BaseTool):
                 raise ValueError(
                     "config['image_collection_mode'] must be one of: serper, html."
                 )
+            dedup_meta: Dict[str, Any] = {}
+            if image_dedup_enable:
+                raw_images_json = run_dir / "images_raw.json"
+                raw_images_json.write_text(
+                    json.dumps(image_records, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                dedup_result = deduplicate_image_records(
+                    image_records,
+                    output_dir=run_dir,
+                    threshold=float(config.get("image_dedup_threshold", 0.90)),
+                    model_path=config.get("image_dedup_model_path") or DEFAULT_SSCD_MODEL_PATH,
+                    model_url=str(config.get("image_dedup_model_url") or DEFAULT_SSCD_MODEL_URL),
+                    batch_size=int(config.get("image_dedup_batch_size", 32)),
+                    max_reported_pairs=int(config.get("image_dedup_max_reported_pairs", 100)),
+                    device=config.get("image_dedup_device"),
+                )
+                image_records = dedup_result["records"]
+                dedup_report = dedup_result["report"]
+                dedup_report_path = run_dir / "image_dedup_report.json"
+                write_image_dedup_report(dedup_report, dedup_report_path)
+                dedup_meta = {
+                    "raw_images_index": str(raw_images_json),
+                    "image_dedup_report_path": str(dedup_report_path),
+                    "image_dedup_enabled": True,
+                    "image_dedup_method": dedup_report.get("method"),
+                    "image_dedup_threshold": dedup_report.get("threshold"),
+                    "image_dedup_model_path": dedup_report.get("model_path"),
+                    "image_dedup_model_url": dedup_report.get("model_url"),
+                    "image_dedup_device": dedup_report.get("device"),
+                    "image_dedup_downloaded_model": dedup_report.get("downloaded_model"),
+                    "num_images_before_dedup": dedup_report.get("num_input_records"),
+                    "num_images_removed_by_dedup": dedup_report.get("num_removed_records"),
+                    "num_image_dedup_clusters": dedup_report.get("num_duplicate_clusters"),
+                }
             images_json = run_dir / "images.json"
             images_json.write_text(
                 json.dumps(image_records, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -167,6 +209,7 @@ class CollectDataTool(BaseTool):
                 "image_taxonomy_schema_version": (config.get("image_taxonomy") or {}).get("schema_version")
                 if isinstance(config.get("image_taxonomy"), dict)
                 else None,
+                **dedup_meta,
             }
             logger.info("Collected %d images into %s", len(image_records), images_dir)
 
@@ -358,3 +401,11 @@ def _image_taxonomy_slot_count(image_taxonomy: Any) -> int:
         return 0
     slots = image_taxonomy.get("slots") or []
     return len(slots) if isinstance(slots, list) else 0
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)

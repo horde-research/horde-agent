@@ -47,8 +47,10 @@ def assess_coverage_and_refine_queries(state: PipelineState) -> dict[str, Any]:
         limit=_int(cfg.get("coverage_max_added_queries"), 12),
         existing={query.lower() for query in search_queries},
     )
-    if blocking_issues and added_queries:
-        suggested_adjustments["coverage_added_queries"] = added_queries
+    repair_queries = added_queries if blocking_issues else []
+    candidate_queries = added_queries if warnings and not blocking_issues else []
+    if repair_queries:
+        suggested_adjustments["coverage_added_queries"] = repair_queries
 
     image_review = _assess_image_coverage(state)
     blocking_issues.extend(image_review["blocking_issues"])
@@ -86,15 +88,16 @@ def assess_coverage_and_refine_queries(state: PipelineState) -> dict[str, Any]:
         "coverage_review": {
             "passed": report.passed,
             "gate_status": report.gate_status,
-            "rationale": _rationale(report, added_queries, image_review),
+            "rationale": _rationale(report, repair_queries, candidate_queries, image_review),
             "weak_text_queries": weak_text_queries,
-            "added_queries": added_queries,
+            "added_queries": repair_queries,
+            "candidate_text_queries": candidate_queries,
             "weak_image_slots": image_review["weak_slots"],
             "image_query_specs": image_review["image_query_specs"],
             "metrics": report.metrics,
             "recommended_actions": report.recommended_actions,
         },
-        "coverage_added_queries": added_queries,
+        "coverage_added_queries": repair_queries,
         "image_query_specs": image_review["image_query_specs"],
     }
 
@@ -332,7 +335,12 @@ def _issue_categories(blocking_issues: list[str], warnings: list[str]) -> list[s
     return sorted(categories)
 
 
-def _rationale(report: QualityReport, added_queries: list[str], image_review: dict[str, Any]) -> str:
+def _rationale(
+    report: QualityReport,
+    repair_queries: list[str],
+    candidate_queries: list[str],
+    image_review: dict[str, Any],
+) -> str:
     if report.passed and not report.warnings:
         return "Collected data passed coverage checks; no query refinement is needed."
     parts: list[str] = []
@@ -340,8 +348,10 @@ def _rationale(report: QualityReport, added_queries: list[str], image_review: di
         parts.append("Coverage needs repair: " + ", ".join(report.blocking_issues) + ".")
     if report.warnings:
         parts.append("Warnings: " + ", ".join(report.warnings) + ".")
-    if added_queries:
-        parts.append(f"Prepared {len(added_queries)} targeted text queries.")
+    if repair_queries:
+        parts.append(f"Prepared {len(repair_queries)} targeted text queries.")
+    elif candidate_queries:
+        parts.append(f"Found {len(candidate_queries)} candidate text queries for manual follow-up.")
     if image_review["image_query_specs"]:
         parts.append(f"Prepared {len(image_review['image_query_specs'])} targeted image query specs.")
     return " ".join(parts)

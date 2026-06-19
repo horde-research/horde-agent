@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,90 @@ def test_collect_data_uses_image_taxonomy_query_specs(
     assert captured["queries"][0]["subdomain_id"] == "traditional_food"
     assert result["metadata"]["num_image_query_specs"] == 1
     assert result["metadata"]["image_taxonomy_schema_version"] == "image_taxonomy_v1"
+
+
+def test_collect_data_runs_image_dedup_when_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def fake_collect_images_from_serper(
+        queries: list[str],
+        out_dir: Path,
+        *,
+        serper_key: str,
+        results_per_query: int,
+        concurrency: int,
+        min_width: int,
+        min_height: int,
+    ) -> list[dict[str, str]]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        first = out_dir / "first.jpg"
+        second = out_dir / "second.jpg"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        return [
+            {"query": queries[0], "img_url": "https://example.com/1.jpg", "file_path": str(first)},
+            {"query": queries[0], "img_url": "https://example.com/2.jpg", "file_path": str(second)},
+        ]
+
+    def fake_deduplicate_image_records(
+        records: list[dict[str, str]],
+        *,
+        output_dir: str | Path,
+        threshold: float,
+        model_path: str,
+        model_url: str,
+        batch_size: int,
+        max_reported_pairs: int,
+        device: str | None,
+    ) -> dict[str, Any]:
+        assert threshold == 0.91
+        assert batch_size == 8
+        return {
+            "records": [records[0]],
+            "report": {
+                "schema_version": "image_dedup.v1",
+                "method": "sscd",
+                "threshold": threshold,
+                "model_path": model_path,
+                "model_url": model_url,
+                "device": device or "cuda",
+                "downloaded_model": True,
+                "num_input_records": 2,
+                "num_kept_records": 1,
+                "num_removed_records": 1,
+                "num_duplicate_clusters": 1,
+            },
+        }
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr("tools.collect_data.tool._search_and_scrape", _fake_search_and_scrape)
+    monkeypatch.setattr("tools.collect_data.tool.collect_images_from_serper", fake_collect_images_from_serper)
+    monkeypatch.setattr("tools.collect_data.tool.deduplicate_image_records", fake_deduplicate_image_records)
+
+    result = CollectDataTool().execute(
+        {
+            "queries": ["kazakh food"],
+            "run_dir": str(tmp_path),
+            "collect_images": True,
+            "image_dedup_enable": True,
+            "image_dedup_threshold": 0.91,
+            "image_dedup_batch_size": 8,
+        }
+    )
+
+    metadata = result["metadata"]
+    assert metadata["num_images"] == 1
+    assert metadata["num_images_before_dedup"] == 2
+    assert metadata["num_images_removed_by_dedup"] == 1
+    assert metadata["image_dedup_enabled"] is True
+    assert metadata["image_dedup_downloaded_model"] is True
+    assert Path(metadata["raw_images_index"]).exists()
+    assert Path(metadata["image_dedup_report_path"]).exists()
+    final_manifest = json.loads(Path(metadata["images_index"]).read_text(encoding="utf-8"))
+    raw_manifest = json.loads(Path(metadata["raw_images_index"]).read_text(encoding="utf-8"))
+    assert len(final_manifest) == 1
+    assert len(raw_manifest) == 2
 
 
 def test_collect_data_can_use_legacy_html_image_collection(

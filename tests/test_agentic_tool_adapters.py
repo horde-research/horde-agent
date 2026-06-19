@@ -158,6 +158,46 @@ def test_collect_data_adapter_forwards_image_collection_config(tmp_path: Path) -
     assert result.artifacts["num_images"] == 3
 
 
+def test_collect_data_adapter_writes_text_quality_when_raw_path_present(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "collect" / "dataset"
+    dataset_dir.mkdir(parents=True)
+    raw_path = tmp_path / "collect" / "serper_raw.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "q1": [
+                    {"url": "https://example.com/a?utm=1", "full_text": "Same collected text."},
+                    {"url": "https://www.example.com/a", "full_text": "Same collected text."},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    collect_tool = FakeTool(
+        {
+            "data_path": str(dataset_dir),
+            "num_samples": 2,
+            "metadata": {"provider": "serper", "raw_result_path": str(raw_path)},
+        }
+    )
+    adapter = AgenticToolAdapter({"collect_data": collect_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"text_quality_enable_embeddings": False},
+        artifacts={"search_queries": ["q1"]},
+    )
+
+    result = adapter.execute_collect_data(state, ActionRequest(ActionType.COLLECT_DATA))
+
+    assert result.status == "success"
+    quality_path = Path(result.artifacts["collection_text_quality_path"])
+    assert quality_path.exists()
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert quality["exact_duplicate_count"] == 1
+    assert quality["url_duplicate_count"] == 1
+    assert result.artifacts["collection_text_quality_summary"]["embedding_enabled"] is False
+
+
 def test_assess_coverage_refines_weak_collection_queries(tmp_path: Path) -> None:
     raw_path = tmp_path / "collect" / "serper_raw.json"
     raw_path.parent.mkdir(parents=True)
@@ -183,6 +223,35 @@ def test_assess_coverage_refines_weak_collection_queries(tmp_path: Path) -> None
     assert "coverage_text_samples_below_minimum" in result.quality_report.blocking_issues
     assert result.artifacts["coverage_added_queries"]
     assert "kazakh food" in result.artifacts["coverage_review"]["weak_text_queries"]
+
+
+def test_assess_coverage_does_not_emit_repair_queries_when_passing(tmp_path: Path) -> None:
+    raw_path = tmp_path / "collect" / "serper_raw.json"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        json.dumps({"kazakh food": [{"url": "u1"}], "dombra music": [{"url": "u2"}]}),
+        encoding="utf-8",
+    )
+    adapter = AgenticToolAdapter({})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"country": "Kazakhstan", "coverage_min_text_samples": 1},
+        artifacts={
+            "search_queries": ["kazakh food", "dombra music"],
+            "num_samples": 2,
+            "collection_metadata": {"raw_result_path": str(raw_path)},
+        },
+    )
+
+    result = adapter.execute_assess_coverage_and_refine_queries(
+        state,
+        ActionRequest(ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES),
+    )
+
+    assert result.status == "success"
+    assert result.artifacts["coverage_added_queries"] == []
+    assert result.artifacts["coverage_review"]["added_queries"] == []
+    assert result.artifacts["coverage_review"]["candidate_text_queries"] == []
 
 
 def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) -> None:
@@ -229,6 +298,51 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     assert result.quality_report and result.quality_report.passed
     assert result.artifacts["sft_path"] == str(sft_path)
     assert result.artifacts["training_modality"] == "image"
+
+
+def test_build_sft_adapter_writes_text_quality(tmp_path: Path) -> None:
+    collected_path = tmp_path / "sft" / "collected_texts.jsonl"
+    collected_path.parent.mkdir(parents=True)
+    collected_path.write_text('{"text": "source"}\n', encoding="utf-8")
+    sft_path = tmp_path / "sft" / "sft.jsonl"
+    annotations_path = tmp_path / "sft" / "annotations.jsonl"
+    sft_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}),
+                json.dumps({"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    annotations_path.write_text('{"success": true}\n', encoding="utf-8")
+    sft_tool = FakeTool(
+        {
+            "mode": "text",
+            "num_items": 2,
+            "num_annotations": 2,
+            "num_examples": 2,
+            "num_failures": 0,
+            "annotations_path": str(annotations_path),
+            "sft_path": str(sft_path),
+        }
+    )
+    adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"sft_mode": "text", "sft_target_language": "English", "text_quality_enable_embeddings": False},
+        artifacts={"collected_texts_jsonl": str(collected_path)},
+    )
+
+    result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
+
+    assert result.status == "success"
+    quality_path = Path(result.artifacts["sft_text_quality_path"])
+    assert quality_path.exists()
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert quality["exact_duplicate_count"] == 1
+    assert result.artifacts["sft_text_quality_summary"]["num_records"] == 2
 
 
 def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:
@@ -444,5 +558,7 @@ def test_debug_stub_eval_returns_valid_happy_eval_contract(tmp_path: Path) -> No
     assert result.quality_report and result.quality_report.passed
     assert Path(result.artifacts["predictions_path"]).exists()
     assert Path(result.artifacts["failures_path"]).exists()
+    assert "eval/attempt_0" in result.artifacts["predictions_path"]
+    assert result.artifacts["eval_attempt"] == 0
     assert result.artifacts["cluster_preview"] == {"clusters": []}
     assert result.raw_output["debug_stub"] is True

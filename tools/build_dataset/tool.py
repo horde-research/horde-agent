@@ -68,7 +68,7 @@ class BuildDatasetTool(BaseTool):
         features = getattr(dataset, "features", {}) or {}
         modality_candidates = infer_modality(columns, features)
         example = build_example_preview(dataset[0]) if len(dataset) > 0 else {}
-        text_columns = [c for c in columns if c in {"text", "prompt", "response", "instruction", "output"}]
+        text_columns = [c for c in columns if c in {"messages", "text", "prompt", "response", "instruction", "output"}]
         warnings = validate_text_columns(dataset, text_columns)
         split_dataset, split_warnings = _build_train_validation_splits(
             dataset,

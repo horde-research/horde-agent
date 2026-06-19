@@ -115,6 +115,8 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Collected at: {collection['collected_at']}")
         if collection.get("raw_result_path"):
             lines.append(f"- Raw result path: `{collection['raw_result_path']}`")
+        lines.extend(_format_text_quality(collection.get("text_quality"), path=collection.get("text_quality_path")))
+        lines.extend(_format_image_dedup(collection.get("image_dedup")))
         lines.append("")
 
     sft = summary.get("sft_summary") or {}
@@ -124,6 +126,7 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
         lines.append(f"- Examples: {sft.get('num_examples', 0)}")
         if sft.get("sft_path"):
             lines.append(f"- SFT path: `{sft['sft_path']}`")
+        lines.extend(_format_text_quality(sft.get("text_quality"), path=sft.get("text_quality_path")))
         if sft.get("dataset_repo_id"):
             lines.append(f"- HF dataset repo: `{sft['dataset_repo_id']}`")
         if sft.get("hf_dataset_upload_error"):
@@ -146,6 +149,10 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
     eval_summary = summary.get("eval_summary") or {}
     if eval_summary:
         lines.append("### Evaluation\n")
+        if eval_summary.get("attempt") is not None:
+            lines.append(f"- Attempt: {eval_summary['attempt']}")
+        if eval_summary.get("attempt_dir"):
+            lines.append(f"- Attempt directory: `{eval_summary['attempt_dir']}`")
         if eval_summary.get("failure_rate") is not None:
             lines.append(f"- Failure rate: {eval_summary['failure_rate']}")
         if eval_summary.get("num_predictions") is not None:
@@ -158,4 +165,63 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
 
     if not lines:
         lines.append("No pipeline summary was provided.\n")
+    return lines
+
+
+def _format_text_quality(quality: Any, *, path: Any = None) -> List[str]:
+    if not isinstance(quality, dict) and not path:
+        return []
+    lines: List[str] = []
+    if isinstance(quality, dict):
+        if quality.get("exact_duplicate_rate") is not None:
+            lines.append(
+                "- Exact duplicate rate: "
+                f"{quality['exact_duplicate_rate']:.3f} ({quality.get('exact_duplicate_count', 0)} duplicates)"
+            )
+        if quality.get("url_duplicate_rate") is not None:
+            lines.append(
+                "- URL duplicate rate: "
+                f"{quality['url_duplicate_rate']:.3f} ({quality.get('url_duplicate_count', 0)} duplicates)"
+            )
+        if quality.get("shingle_pair_count") is not None:
+            lines.append(
+                "- Shingle near-duplicate pairs: "
+                f"{quality['shingle_pair_count']} across {quality.get('shingle_num_compared', 0)} checked rows"
+            )
+        if quality.get("embedding_enabled"):
+            model = quality.get("embedding_model") or "unknown"
+            count = quality.get("embedding_pair_count", 0)
+            embedded = quality.get("embedding_num_embedded", 0)
+            lines.append(f"- Embedding near-duplicate pairs: {count} across {embedded} embedded rows (`{model}`)")
+        elif quality.get("embedding_enabled") is False:
+            model = quality.get("embedding_model") or "unknown"
+            lines.append(f"- Embedding near-duplicate check: disabled (`{model}`)")
+        if quality.get("embedding_error"):
+            lines.append(f"- Embedding near-duplicate error: `{quality['embedding_error']}`")
+    if path:
+        lines.append(f"- Text quality path: `{path}`")
+    return lines
+
+
+def _format_image_dedup(summary: Any) -> List[str]:
+    if not isinstance(summary, dict) or not summary.get("enabled"):
+        return []
+    before = summary.get("num_before")
+    after = summary.get("num_after")
+    removed = summary.get("num_removed")
+    method = summary.get("method") or "unknown"
+    threshold = summary.get("threshold")
+    lines = [f"- Image dedup: `{method}` threshold={threshold} kept={after}/{before} removed={removed}"]
+    if summary.get("num_clusters") is not None:
+        lines.append(f"- Image dedup clusters: {summary['num_clusters']}")
+    if summary.get("downloaded_model"):
+        lines.append(f"- Image dedup downloaded model: `{summary.get('model_path')}`")
+    elif summary.get("model_path"):
+        lines.append(f"- Image dedup model: `{summary['model_path']}`")
+    if summary.get("device"):
+        lines.append(f"- Image dedup device: `{summary['device']}`")
+    if summary.get("report_path"):
+        lines.append(f"- Image dedup report: `{summary['report_path']}`")
+    if summary.get("raw_images_index"):
+        lines.append(f"- Raw image manifest: `{summary['raw_images_index']}`")
     return lines

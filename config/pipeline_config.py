@@ -51,6 +51,16 @@ class PipelineConfig(BaseModel):
     enable_image_taxonomy: bool = True
     image_taxonomy_queries_per_slot: int = 4
     image_taxonomy_max_slots: Optional[int] = None
+    image_dedup_enable: bool = False
+    image_dedup_threshold: float = 0.90
+    image_dedup_model_path: str = "models/sscd_disc_mixup.torchscript.pt"
+    image_dedup_model_url: str = (
+        "https://dl.fbaipublicfiles.com/sscd-copy-detection/"
+        "sscd_disc_mixup.torchscript.pt"
+    )
+    image_dedup_batch_size: int = 32
+    image_dedup_max_reported_pairs: int = 100
+    image_dedup_device: Optional[str] = None
 
     # ── Agentic coverage assessment ─────────────────────────────────────────
     coverage_min_text_samples: int = 3
@@ -59,6 +69,15 @@ class PipelineConfig(BaseModel):
     coverage_min_image_slot_ratio: float = 0.2
     coverage_min_images_per_slot: int = 1
     coverage_max_image_query_specs: int = 12
+
+    # ── Text quality diagnostics ─────────────────────────────────────────────
+    text_quality_enable_embeddings: bool = False
+    text_quality_embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    text_quality_embedding_threshold: float = 0.93
+    text_quality_max_embedding_items: int = 256
+    text_quality_shingle_threshold: float = 0.85
+    text_quality_max_shingle_items: int = 1000
+    text_quality_max_reported_pairs: int = 50
 
     # ── SFT annotation ───────────────────────────────────────────────────────
     # Primary modality switch for examples that flow into dataset/train.
@@ -141,12 +160,26 @@ class PipelineConfig(BaseModel):
             "enable_image_taxonomy": os.getenv("ENABLE_IMAGE_TAXONOMY"),
             "image_taxonomy_queries_per_slot": os.getenv("IMAGE_TAXONOMY_QUERIES_PER_SLOT"),
             "image_taxonomy_max_slots": os.getenv("IMAGE_TAXONOMY_MAX_SLOTS"),
+            "image_dedup_enable": os.getenv("IMAGE_DEDUP_ENABLE"),
+            "image_dedup_threshold": os.getenv("IMAGE_DEDUP_THRESHOLD"),
+            "image_dedup_model_path": os.getenv("IMAGE_DEDUP_MODEL_PATH"),
+            "image_dedup_model_url": os.getenv("IMAGE_DEDUP_MODEL_URL"),
+            "image_dedup_batch_size": os.getenv("IMAGE_DEDUP_BATCH_SIZE"),
+            "image_dedup_max_reported_pairs": os.getenv("IMAGE_DEDUP_MAX_REPORTED_PAIRS"),
+            "image_dedup_device": os.getenv("IMAGE_DEDUP_DEVICE"),
             "coverage_min_text_samples": os.getenv("COVERAGE_MIN_TEXT_SAMPLES"),
             "coverage_min_samples_per_query": os.getenv("COVERAGE_MIN_SAMPLES_PER_QUERY"),
             "coverage_max_added_queries": os.getenv("COVERAGE_MAX_ADDED_QUERIES"),
             "coverage_min_image_slot_ratio": os.getenv("COVERAGE_MIN_IMAGE_SLOT_RATIO"),
             "coverage_min_images_per_slot": os.getenv("COVERAGE_MIN_IMAGES_PER_SLOT"),
             "coverage_max_image_query_specs": os.getenv("COVERAGE_MAX_IMAGE_QUERY_SPECS"),
+            "text_quality_enable_embeddings": os.getenv("TEXT_QUALITY_ENABLE_EMBEDDINGS"),
+            "text_quality_embedding_model": os.getenv("TEXT_QUALITY_EMBEDDING_MODEL"),
+            "text_quality_embedding_threshold": os.getenv("TEXT_QUALITY_EMBEDDING_THRESHOLD"),
+            "text_quality_max_embedding_items": os.getenv("TEXT_QUALITY_MAX_EMBEDDING_ITEMS"),
+            "text_quality_shingle_threshold": os.getenv("TEXT_QUALITY_SHINGLE_THRESHOLD"),
+            "text_quality_max_shingle_items": os.getenv("TEXT_QUALITY_MAX_SHINGLE_ITEMS"),
+            "text_quality_max_reported_pairs": os.getenv("TEXT_QUALITY_MAX_REPORTED_PAIRS"),
             "training_modality": os.getenv("TRAINING_MODALITY"),
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
@@ -208,6 +241,22 @@ class PipelineConfig(BaseModel):
             raise ValueError("coverage_min_samples_per_query must be >= 0.")
         if not 0.0 <= float(self.coverage_min_image_slot_ratio) <= 1.0:
             raise ValueError("coverage_min_image_slot_ratio must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.image_dedup_threshold) <= 1.0:
+            raise ValueError("image_dedup_threshold must be between 0.0 and 1.0.")
+        if int(self.image_dedup_batch_size) < 1:
+            raise ValueError("image_dedup_batch_size must be >= 1.")
+        if int(self.image_dedup_max_reported_pairs) < 0:
+            raise ValueError("image_dedup_max_reported_pairs must be >= 0.")
+        if not 0.0 <= float(self.text_quality_embedding_threshold) <= 1.0:
+            raise ValueError("text_quality_embedding_threshold must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.text_quality_shingle_threshold) <= 1.0:
+            raise ValueError("text_quality_shingle_threshold must be between 0.0 and 1.0.")
+        if int(self.text_quality_max_embedding_items) < 0:
+            raise ValueError("text_quality_max_embedding_items must be >= 0.")
+        if int(self.text_quality_max_shingle_items) < 0:
+            raise ValueError("text_quality_max_shingle_items must be >= 0.")
+        if int(self.text_quality_max_reported_pairs) < 0:
+            raise ValueError("text_quality_max_reported_pairs must be >= 0.")
         return self
 
     def train_config_dict(self) -> dict:

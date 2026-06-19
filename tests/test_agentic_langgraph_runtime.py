@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -81,6 +82,42 @@ def test_langgraph_runtime_runs_full_graph_and_persists_state(tmp_path: Path, ca
     assert "Agent: next I will run 'generate_taxonomy'." in caplog.text
     assert "Agent: doing 'generate_taxonomy' now." in caplog.text
     assert "Agent: 'generate_taxonomy' is done." in caplog.text
+
+
+def test_state_store_redacts_secrets_and_writes_artifact_manifest(tmp_path: Path) -> None:
+    sft_path = tmp_path / "sft" / "sft.jsonl"
+    sft_path.parent.mkdir(parents=True)
+    sft_path.write_text('{"messages": []}\n', encoding="utf-8")
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "llm_api_key": "secret-llm",
+            "hf_token": "secret-hf",
+            "eval_max_new_tokens": 128,
+        },
+    )
+    state.record_action_result(
+        ActionResult(
+            action_type=ActionType.BUILD_SFT_DATASET,
+            status="success",
+            quality_report=_passing_report(ActionType.BUILD_SFT_DATASET),
+            artifacts={"sft_path": str(sft_path)},
+            raw_output={"large": "passed output"},
+        )
+    )
+
+    PipelineStateStore(tmp_path).save(state)
+
+    payload = json.loads((tmp_path / "agent_state.json").read_text(encoding="utf-8"))
+    assert payload["config"]["llm_api_key"] == "[REDACTED]"
+    assert payload["config"]["hf_token"] == "[REDACTED]"
+    assert payload["config"]["eval_max_new_tokens"] == 128
+    assert payload["result_history"][0]["raw_output"]["omitted"] == "passed_stage_raw_output"
+    manifest = json.loads((tmp_path / "artifact_manifest.json").read_text(encoding="utf-8"))
+    sft_rows = [row for row in manifest["artifacts"] if row["key"] == "sft_path"]
+    assert sft_rows
+    assert sft_rows[0]["stage"] == "build_sft_dataset"
+    assert sft_rows[0]["exists"] is True
 
 
 def test_langgraph_runtime_resume_requires_confirmation_without_provider(tmp_path: Path) -> None:

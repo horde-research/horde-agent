@@ -83,6 +83,7 @@ Optional but common:
 - `HF_TOKEN`: needed for private/gated Hugging Face models and optional pushes.
 - `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated SFT dataset and LoRA adapter to Hugging Face Hub from `full_agentic` and `workflow` runs. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
+- `TEXT_QUALITY_ENABLE_EMBEDDINGS=true`: enable embedding near-duplicate diagnostics. The default model is `Qwen/Qwen3-Embedding-0.6B`; leave this disabled for quick smoke runs if you do not want an extra model download.
 
 ## CPU Debug Run
 
@@ -151,6 +152,16 @@ IMAGE_TAXONOMY_MAX_SLOTS=3
 HF_MODEL_ID=<image-text-model-id>
 ```
 
+Optional image near-duplicate filtering can run after image download and before image SFT annotation:
+
+```bash
+IMAGE_DEDUP_ENABLE=true
+IMAGE_DEDUP_THRESHOLD=0.90
+IMAGE_DEDUP_MODEL_PATH=models/sscd_disc_mixup.torchscript.pt
+```
+
+When enabled, the SSCD TorchScript model is downloaded from Facebook Research if missing, then used for batched inference. The pipeline keeps `collect/images_raw.json`, writes the deduped active manifest to `collect/images.json`, and stores cluster/pair details in `collect/image_dedup_report.json`.
+
 Keep `EVAL_ENABLE_LLM_JUDGE=false` for the first GPU smoke run. Enable it only after the deterministic train/eval path works.
 
 Judge-enabled eval can be run from an existing trained adapter:
@@ -190,6 +201,24 @@ HF_ADAPTER_REPO=horde-agent-kazakhstan-lora
 
 Adapter upload happens only after real `train_model` succeeds. `debug_stub_train` skips adapter upload to avoid publishing dummy adapters. Dataset upload happens after `build_sft_dataset` succeeds. Upload repo ids or upload errors are recorded in agent artifacts and the final report.
 
+## Text Quality Diagnostics
+
+`full_agentic` writes compact text-quality summaries after collection and SFT generation:
+
+- `collect/text_quality.json`: diagnostics over scraped page text from `serper_raw.json`.
+- `sft/text_quality.json`: diagnostics over the generated chat SFT JSONL.
+
+The reports include exact normalized duplicate rate, canonical URL duplicate rate, shingle/Jaccard near-duplicate counts, length stats, script mix, domain distribution, and a capped list of example duplicate pairs. Embedding near-duplicate detection is opt-in:
+
+```bash
+TEXT_QUALITY_ENABLE_EMBEDDINGS=true
+TEXT_QUALITY_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+TEXT_QUALITY_EMBEDDING_THRESHOLD=0.93
+TEXT_QUALITY_MAX_EMBEDDING_ITEMS=256
+```
+
+The embedding pass records errors inside `text_quality.json` instead of failing the pipeline, so a missing model download or device issue does not hide the primary train/eval result.
+
 ## Resume and Restart
 
 `full_agentic` writes state into `RUN_DIR`. If a run directory already contains `agent_state.json`, the controller resumes from it.
@@ -206,14 +235,14 @@ If you change data collection or taxonomy settings, prefer a new `RUN_DIR` or re
 
 Local artifacts are written under `RUN_DIR`:
 
-- `agent_state.json`: latest serialized pipeline state.
+- `agent_state.json`: latest serialized pipeline state with credential-like values redacted.
+- `artifact_manifest.json`: active local artifact paths, owning stage, existence, size, attempt, and iteration metadata.
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.
-- `collect/`: raw collection output and metadata.
-- `sft/`: annotations and SFT JSONL.
+- `collect/`: raw collection output, metadata, collection text-quality diagnostics, and optional image dedup reports.
+- `sft/`: annotations, SFT JSONL, and SFT text-quality diagnostics.
 - `dataset/`: Hugging Face train/validation dataset.
-- `eval_metrics.json`, `predictions.jsonl`, `failures.jsonl`, `cluster_preview.json`: validation outputs, deterministic diagnostics, and clustered failures.
-- `judge_results.jsonl`, `judge_summary.json`: present when LLM-as-judge is enabled.
+- `eval/attempt_N/`: validation outputs, deterministic diagnostics, clustered failures, and judge artifacts for each evaluation attempt.
 - Final report path is logged at the end when report generation succeeds.
 
 LangSmith traces are available in the project configured by `LANGSMITH_PROJECT` or `horde-agent`. Each run has a root span and one child span per stage.
@@ -237,7 +266,9 @@ PYENV_VERSION=agents pyenv exec python -m pytest \
   tests/test_image_taxonomy.py \
   tests/test_collect_data_image_search.py \
   tests/test_eval_quality.py \
-  tests/test_image_training.py
+  tests/test_image_training.py \
+  tests/test_text_quality.py \
+  tests/test_image_dedup.py
 ```
 
 Live tests such as `tests/test_live_pipeline.py` and `tests/test_full_live_pipeline.py` require real API keys and network access.
