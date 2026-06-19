@@ -53,6 +53,7 @@ class RecordingSftTool:
                             "group_key": row.get("group_key"),
                             "source_url": row.get("source_url"),
                             "source_excerpt": row.get("source_excerpt"),
+                            "collection_iteration": row.get("collection_iteration"),
                         },
                         ensure_ascii=False,
                     )
@@ -433,6 +434,72 @@ def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> No
         for line in Path(sft_tool.calls[1]["input_jsonl"]).read_text(encoding="utf-8").splitlines()
     }
     assert train_groups.isdisjoint(eval_groups)
+
+
+def test_build_sft_adapter_merges_text_sources_across_collection_iterations(tmp_path: Path) -> None:
+    sft_dir = tmp_path / "sft"
+    sft_dir.mkdir(parents=True)
+    previous_rows = [
+        {
+            "text": "Old Source A text",
+            "source_url": "https://example.com/a",
+            "group_key": "source-a",
+            "collection_iteration": "iteration_0",
+        },
+        {
+            "text": "Shared Source B text",
+            "source_url": "https://example.com/b",
+            "group_key": "source-b",
+            "collection_iteration": "iteration_0",
+        },
+    ]
+    (sft_dir / "collected_texts_merged.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in previous_rows),
+        encoding="utf-8",
+    )
+    current_path = sft_dir / "current_collection.jsonl"
+    current_rows = [
+        {"text": "Shared Source B text", "source_url": "https://example.com/b", "group_key": "source-b"},
+        {"text": "New Source C text", "source_url": "https://example.com/c", "group_key": "source-c"},
+    ]
+    current_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in current_rows),
+        encoding="utf-8",
+    )
+    sft_tool = RecordingSftTool()
+    adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "sft_mode": "text",
+            "sft_target_language": "English",
+            "source_eval_ratio": 0.34,
+            "source_eval_max_items": 1,
+            "seed": 3,
+        },
+        artifacts={"collected_texts_jsonl": str(current_path)},
+        retry_counts={ActionType.COLLECT_DATA.value: 1},
+    )
+
+    result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
+
+    assert result.status == "success"
+    registry_rows = [
+        json.loads(line)
+        for line in Path(result.artifacts["source_registry_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(registry_rows) == 3
+    by_url = {row["source_url"]: row for row in registry_rows}
+    assert by_url["https://example.com/a"]["collection_iteration"] == "iteration_0"
+    assert by_url["https://example.com/c"]["collection_iteration"] == "iteration_1"
+    assert by_url["https://example.com/b"]["seen_collection_iterations"] == ["iteration_0", "iteration_1"]
+    summary = result.artifacts["source_registry_summary"]
+    assert summary["num_previous_source_rows"] == 2
+    assert summary["num_current_source_rows"] == 2
+    assert summary["num_merged_source_rows"] == 3
+    assert summary["num_new_source_rows"] == 1
+    assert summary["num_existing_source_rows_seen"] == 1
 
 
 def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:

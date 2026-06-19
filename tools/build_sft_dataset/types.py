@@ -23,3 +23,4 @@ class TextItem:
     source_id: Optional[str] = None
     source_query: Optional[str] = None
     source_excerpt: Optional[str] = None
+    collection_iteration: Optional[str] = None

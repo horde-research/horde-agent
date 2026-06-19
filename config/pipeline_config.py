@@ -93,6 +93,7 @@ class PipelineConfig(BaseModel):
     sft_mode: str = "text"
     sft_target_language: str
     sft_prompt_preset: str = "default"
+    sft_reuse_annotations: bool = True
     source_eval_enable: bool = True
     source_eval_ratio: float = 0.1
     source_eval_max_items: int = 8
@@ -202,6 +203,7 @@ class PipelineConfig(BaseModel):
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
             "sft_prompt_preset": os.getenv("SFT_PROMPT_PRESET"),
+            "sft_reuse_annotations": os.getenv("SFT_REUSE_ANNOTATIONS"),
             "source_eval_enable": os.getenv("SOURCE_EVAL_ENABLE"),
             "source_eval_ratio": os.getenv("SOURCE_EVAL_RATIO"),
             "source_eval_max_items": os.getenv("SOURCE_EVAL_MAX_ITEMS"),

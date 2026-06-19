@@ -83,6 +83,7 @@ Optional but common:
 - `HF_TOKEN`: needed for private/gated Hugging Face models and optional pushes.
 - `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated SFT dataset and LoRA adapter to Hugging Face Hub from `full_agentic` and `workflow` runs. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
+- `SFT_REUSE_ANNOTATIONS=true`: reuse cached text SFT annotations across collection recovery attempts. Enabled by default.
 - `TEXT_QUALITY_ENABLE_EMBEDDINGS=true`: enable embedding near-duplicate diagnostics. The default model is `Qwen/Qwen3-Embedding-0.6B`; leave this disabled for quick smoke runs if you do not want an extra model download.
 
 ## CPU Debug Run
@@ -206,6 +207,18 @@ EVAL_COMPARE_BASE_MODEL=true
 
 When held-out eval examples exist, `evaluate_model` uses them instead of the internal dataset validation split. It first predicts with the base model, then predicts with the trained LoRA adapter on the same examples, and writes `eval/attempt_N/lift_summary.json` with deltas such as quality score, failure rate, major failure rate, and unsupported grounding rate.
 
+## Incremental Text Recovery
+
+When eval recovery asks for more source collection, text runs keep a merged source registry under `sft/collected_texts_merged.jsonl`. New collection results are deduplicated against previous source rows by source identity plus text hash, each row keeps `collection_iteration` such as `iteration_0` or `iteration_1`, and the train/held-out source split is recomputed over the merged registry.
+
+Text annotation reuse is enabled by default:
+
+```bash
+SFT_REUSE_ANNOTATIONS=true
+```
+
+The SFT stage writes `sft/text_annotation_cache.jsonl` and only sends newly added or changed source rows to the LLM annotator. Reused rows are still included when the split is recomputed, so an old source can move between train and held-out eval without being relabeled.
+
 ## Hugging Face Uploads
 
 Set these in `.env` to publish artifacts from `full_agentic`:
@@ -282,7 +295,7 @@ Local artifacts are written under `RUN_DIR`:
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.
 - `collect/`: raw collection output, text filter report, metadata, collection text-quality diagnostics, and optional image dedup reports.
-- `sft/`: train-source annotations/SFT JSONL, held-out source eval JSONL when available, and SFT text-quality diagnostics.
+- `sft/`: merged text source registry, annotation cache, train-source annotations/SFT JSONL, held-out source eval JSONL when available, and SFT text-quality diagnostics.
 - `dataset/`: Hugging Face train/validation dataset.
 - `eval/attempt_N/`: adapter validation outputs, base-model validation outputs under `base/`, deterministic diagnostics, clustered failures, judge artifacts, and lift summary for each evaluation attempt.
 - Final report path is logged at the end when report generation succeeds.

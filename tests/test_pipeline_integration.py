@@ -405,6 +405,91 @@ class TestBuildSftDataset:
                 sft_examples.append(json.loads(line))
         assert all("messages" in ex for ex in sft_examples)
 
+    def test_text_mode_reuses_cached_annotations_for_unchanged_sources(self, mock_llm, run_dir):
+        from tools.build_sft_dataset.tool import BuildSftDatasetTool
+
+        requested_batches: list[list[str]] = []
+
+        def _fake_batch(requests, *, batch_size=5, batch_delay_seconds=1.5):
+            requested_batches.append([request.request_id for request in requests])
+            return [_make_fake_llm_response(FAKE_TEXT_ANNOTATION, request.request_id) for request in requests]
+
+        mock_llm.generate_json_batch_sync = _fake_batch
+        cache_path = os.path.join(run_dir, "annotation_cache.jsonl")
+        first_jsonl = os.path.join(run_dir, "first.jsonl")
+        second_jsonl = os.path.join(run_dir, "second.jsonl")
+        with open(first_jsonl, "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "id": "source-a",
+                        "text": "Kazakhstan is a country in Central Asia with rich traditions.",
+                        "source_url": "https://example.com/a",
+                        "collection_iteration": "iteration_0",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "id": "source-b",
+                        "text": "Beshbarmak is a beloved dish of the Kazakh people.",
+                        "source_url": "https://example.com/b",
+                        "collection_iteration": "iteration_0",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        with open(second_jsonl, "w", encoding="utf-8") as f:
+            f.write(Path(first_jsonl).read_text(encoding="utf-8"))
+            f.write(
+                json.dumps(
+                    {
+                        "id": "source-c",
+                        "text": "The dombra is a two-stringed instrument played in Kazakhstan.",
+                        "source_url": "https://example.com/c",
+                        "collection_iteration": "iteration_1",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+        first = BuildSftDatasetTool().execute({
+            "mode": "text",
+            "input_jsonl": first_jsonl,
+            "text_field": "text",
+            "output_annotations": os.path.join(run_dir, "ann_first.jsonl"),
+            "output_sft": os.path.join(run_dir, "sft_first.jsonl"),
+            "reuse_annotations": True,
+            "annotation_cache_path": cache_path,
+            "batch_size": 2,
+            "batch_delay": 0.0,
+        })
+        second = BuildSftDatasetTool().execute({
+            "mode": "text",
+            "input_jsonl": second_jsonl,
+            "text_field": "text",
+            "output_annotations": os.path.join(run_dir, "ann_second.jsonl"),
+            "output_sft": os.path.join(run_dir, "sft_second.jsonl"),
+            "reuse_annotations": True,
+            "annotation_cache_path": cache_path,
+            "batch_size": 2,
+            "batch_delay": 0.0,
+        })
+
+        assert requested_batches == [["source-a", "source-b"], ["source-c"]]
+        assert first["annotation_reuse"]["num_reused_annotations"] == 0
+        assert second["annotation_reuse"]["num_reused_annotations"] == 2
+        assert second["annotation_reuse"]["num_llm_annotation_requests"] == 1
+        assert second["annotation_reuse"]["num_cache_entries"] == 3
+        with open(second["sft_path"], encoding="utf-8") as f:
+            examples = [json.loads(line) for line in f if line.strip()]
+        assert {example["collection_iteration"] for example in examples} == {"iteration_0", "iteration_1"}
+
     def test_text_sft_examples_preserve_source_metadata(self):
         from tools.build_sft_dataset.sft_builders import build_text_sft_examples, parse_text_annotation
 

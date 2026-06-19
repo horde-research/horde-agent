@@ -108,6 +108,7 @@ def load_texts_from_jsonl(input_jsonl: str, text_field: str) -> List[TextItem]:
                     source_id=source_id or None,
                     source_query=str(payload.get("source_query") or payload.get("query") or "").strip() or None,
                     source_excerpt=source_excerpt or None,
+                    collection_iteration=str(payload.get("collection_iteration") or "").strip() or None,
                 )
             )
     return items

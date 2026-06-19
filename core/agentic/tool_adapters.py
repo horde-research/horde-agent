@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -246,14 +247,21 @@ class AgenticToolAdapter:
                     tool_config["image_manifest"] = str(image_manifest)
                 tool_config["image_exts"] = cfg.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
                 source_split: Dict[str, Any] = {}
+                source_registry: Dict[str, Any] = {}
             else:
                 input_jsonl = state.artifacts.get("collected_texts_jsonl")
                 if not input_jsonl:
                     data_path = state.artifacts.get("data_path") or cfg.get("data_path")
                     if not data_path:
                         raise ValueError("data_path artifact is required for text SFT mode.")
-                    input_jsonl = str(sft_dir / "collected_texts.jsonl")
+                    input_jsonl = str(sft_dir / f"collected_texts_{_collection_iteration_label(state)}.jsonl")
                     _export_hf_dataset_to_jsonl(str(data_path), input_jsonl)
+                source_registry = _prepare_incremental_text_source_registry(
+                    str(input_jsonl),
+                    sft_dir,
+                    collection_iteration=_collection_iteration_label(state),
+                )
+                input_jsonl = source_registry["merged_input_jsonl"]
                 source_split = _prepare_text_source_split(
                     str(input_jsonl),
                     sft_dir,
@@ -265,6 +273,9 @@ class AgenticToolAdapter:
                 input_jsonl = source_split.get("train_input_jsonl") or input_jsonl
                 tool_config["input_jsonl"] = str(input_jsonl)
                 tool_config["text_field"] = cfg.get("sft_text_field", "text")
+                tool_config["reuse_annotations"] = _as_bool(cfg.get("sft_reuse_annotations", True))
+                tool_config["annotation_cache_path"] = str(sft_dir / "text_annotation_cache.jsonl")
+                tool_config["annotation_cache_metadata"] = _text_annotation_cache_signature(cfg)
 
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
@@ -284,6 +295,7 @@ class AgenticToolAdapter:
                         "heldout_eval_sft_path": eval_output.get("sft_path"),
                         "heldout_eval_annotations_path": eval_output.get("annotations_path"),
                         "heldout_eval_num_examples": eval_output.get("num_examples"),
+                        "heldout_eval_annotation_reuse_summary": eval_output.get("annotation_reuse"),
                     }
                 except Exception as exc:
                     logger.warning("Failed to build held-out source eval set: %s", exc)
@@ -298,6 +310,10 @@ class AgenticToolAdapter:
                 "annotations_path": output.get("annotations_path"),
                 "num_sft_examples": output.get("num_examples"),
                 "sft_prompt_preset": output.get("prompt_preset"),
+                "source_registry_path": source_registry.get("source_registry_path") if mode == "text" else None,
+                "source_registry_summary": source_registry.get("summary") if mode == "text" else None,
+                "annotation_cache_path": output.get("annotation_cache_path"),
+                "annotation_reuse_summary": output.get("annotation_reuse"),
                 "source_split_summary": source_split.get("summary") if mode == "text" else None,
                 **heldout_eval_artifacts,
                 **text_quality_artifacts,
@@ -648,6 +664,137 @@ def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
             handle.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
 
 
+def _collection_iteration_label(state: PipelineState) -> str:
+    return f"iteration_{int(state.retry_counts.get(ActionType.COLLECT_DATA.value, 0) or 0)}"
+
+
+def _prepare_incremental_text_source_registry(
+    current_input_jsonl: str,
+    sft_dir: Path,
+    *,
+    collection_iteration: str,
+) -> Dict[str, Any]:
+    registry_path = sft_dir / "collected_texts_merged.jsonl"
+    alias_path = sft_dir / "collected_texts.jsonl"
+    previous_rows = _read_existing_source_registry(registry_path, alias_path, current_input_jsonl)
+    current_rows = _read_jsonl_rows(current_input_jsonl)
+
+    merged_rows: list[Dict[str, Any]] = []
+    merged_by_key: dict[str, Dict[str, Any]] = {}
+    for idx, row in enumerate(previous_rows):
+        normalized = _normalize_source_registry_row(row, idx, fallback_iteration="iteration_0")
+        key = str(normalized["source_registry_key"])
+        if key not in merged_by_key:
+            merged_by_key[key] = normalized
+            merged_rows.append(normalized)
+
+    num_new_rows = 0
+    num_existing_rows_seen = 0
+    for idx, row in enumerate(current_rows):
+        normalized = _normalize_source_registry_row(row, idx, fallback_iteration=collection_iteration)
+        key = str(normalized["source_registry_key"])
+        if key in merged_by_key:
+            num_existing_rows_seen += 1
+            _mark_source_row_seen(merged_by_key[key], collection_iteration)
+            continue
+        num_new_rows += 1
+        merged_by_key[key] = normalized
+        merged_rows.append(normalized)
+
+    _write_jsonl_rows(registry_path, merged_rows)
+    _write_jsonl_rows(alias_path, merged_rows)
+    summary = {
+        "schema_version": "text_source_registry.v1",
+        "collection_iteration": collection_iteration,
+        "current_source_path": current_input_jsonl,
+        "source_registry_path": str(registry_path),
+        "merged_source_path": str(alias_path),
+        "num_previous_source_rows": len(previous_rows),
+        "num_current_source_rows": len(current_rows),
+        "num_merged_source_rows": len(merged_rows),
+        "num_new_source_rows": num_new_rows,
+        "num_existing_source_rows_seen": num_existing_rows_seen,
+    }
+    return {
+        "merged_input_jsonl": str(registry_path),
+        "source_registry_path": str(registry_path),
+        "summary": summary,
+    }
+
+
+def _read_existing_source_registry(registry_path: Path, alias_path: Path, current_input_jsonl: str) -> list[Dict[str, Any]]:
+    current_path = Path(current_input_jsonl).resolve()
+    for path in (registry_path, alias_path):
+        if path.exists() and path.resolve() != current_path:
+            return _read_jsonl_rows(str(path))
+    return []
+
+
+def _normalize_source_registry_row(row: Mapping[str, Any], idx: int, *, fallback_iteration: str) -> Dict[str, Any]:
+    normalized = dict(row)
+    text = str(normalized.get("text") or normalized.get("source_text") or "").strip()
+    source_identity = _source_identity(normalized, idx)
+    text_hash = hashlib.sha256(_normalize_source_text(text).encode("utf-8")).hexdigest()
+    registry_key = _source_registry_key(source_identity, text_hash)
+    collection_iteration = str(normalized.get("collection_iteration") or fallback_iteration)
+    normalized["id"] = registry_key
+    normalized["source_registry_key"] = registry_key
+    normalized["source_text_hash"] = text_hash
+    normalized["source_identity"] = source_identity
+    if text and not normalized.get("text"):
+        normalized["text"] = text
+    normalized["collection_iteration"] = collection_iteration
+    normalized.setdefault("first_seen_collection_iteration", collection_iteration)
+    normalized["last_seen_collection_iteration"] = str(normalized.get("last_seen_collection_iteration") or collection_iteration)
+    seen = normalized.get("seen_collection_iterations")
+    if not isinstance(seen, list):
+        seen = [collection_iteration]
+    if collection_iteration not in seen:
+        seen.append(collection_iteration)
+    normalized["seen_collection_iterations"] = seen
+    normalized.setdefault("group_key", _source_group_key(normalized, idx))
+    if text and not normalized.get("source_excerpt"):
+        normalized["source_excerpt"] = text[:2000]
+    return normalized
+
+
+def _source_identity(row: Mapping[str, Any], idx: int) -> str:
+    for key in ("source_identity", "source_url", "url", "group_key", "source_id", "id"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return f"row:{idx}"
+
+
+def _source_registry_key(source_identity: str, text_hash: str) -> str:
+    payload = {"source_identity": source_identity, "text_hash": text_hash}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _normalize_source_text(value: str) -> str:
+    return " ".join(str(value or "").split()).strip().lower()
+
+
+def _mark_source_row_seen(row: Dict[str, Any], collection_iteration: str) -> None:
+    row["last_seen_collection_iteration"] = collection_iteration
+    seen = row.get("seen_collection_iterations")
+    if not isinstance(seen, list):
+        seen = []
+    if collection_iteration not in seen:
+        seen.append(collection_iteration)
+    row["seen_collection_iterations"] = seen
+
+
+def _text_annotation_cache_signature(config: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": "text_annotation.v1",
+        "target_language": config.get("sft_target_language", "English"),
+        "prompt_preset": config.get("sft_prompt_preset", "default"),
+        "provider": config.get("llm_provider"),
+        "model": config.get("llm_model"),
+    }
+
+
 def _prepare_text_source_split(
     input_jsonl: str,
     sft_dir: Path,
@@ -984,6 +1131,8 @@ def _build_dataset_card(
     sft_quality = artifacts.get("sft_text_quality_summary") or {}
     summary = dict(dataset_summary or artifacts.get("dataset_summary") or {})
     source_split = artifacts.get("source_split_summary") if isinstance(artifacts.get("source_split_summary"), dict) else {}
+    source_registry = artifacts.get("source_registry_summary") if isinstance(artifacts.get("source_registry_summary"), dict) else {}
+    annotation_reuse = artifacts.get("annotation_reuse_summary") if isinstance(artifacts.get("annotation_reuse_summary"), dict) else {}
     lines = [
         "---",
         "tags:",
@@ -1024,6 +1173,11 @@ def _build_dataset_card(
                 ("Text rows before filter", text_filter.get("num_input")),
                 ("Text rows kept", text_filter.get("num_kept")),
                 ("Text rows removed", text_filter.get("num_removed")),
+                ("Merged source rows", source_registry.get("num_merged_source_rows")),
+                ("New source rows this iteration", source_registry.get("num_new_source_rows")),
+                ("Existing source rows seen again", source_registry.get("num_existing_source_rows_seen")),
+                ("Reused annotations", annotation_reuse.get("num_reused_annotations")),
+                ("New annotation requests", annotation_reuse.get("num_llm_annotation_requests")),
                 ("Source split strategy", source_split.get("split_strategy")),
                 ("Train source groups", source_split.get("num_train_source_groups")),
                 ("Eval source groups", source_split.get("num_eval_source_groups")),
