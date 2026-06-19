@@ -93,6 +93,9 @@ class PipelineConfig(BaseModel):
     sft_mode: str = "text"
     sft_target_language: str
     sft_prompt_preset: str = "default"
+    source_eval_enable: bool = True
+    source_eval_ratio: float = 0.1
+    source_eval_max_items: int = 8
 
     # ── Training ─────────────────────────────────────────────────────────────
     hf_model_id: str
@@ -117,6 +120,7 @@ class PipelineConfig(BaseModel):
     eval_split: str = "validation"
     eval_max_samples: int = 64
     eval_max_new_tokens: int = 128
+    eval_compare_base_model: bool = True
     eval_enable_llm_judge: bool = False
     eval_judge_max_samples: int = 32
     eval_judge_batch_size: int = 3
@@ -198,6 +202,9 @@ class PipelineConfig(BaseModel):
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
             "sft_prompt_preset": os.getenv("SFT_PROMPT_PRESET"),
+            "source_eval_enable": os.getenv("SOURCE_EVAL_ENABLE"),
+            "source_eval_ratio": os.getenv("SOURCE_EVAL_RATIO"),
+            "source_eval_max_items": os.getenv("SOURCE_EVAL_MAX_ITEMS"),
             "hf_model_id": os.getenv("HF_MODEL_ID"),
             "max_iters": os.getenv("MAX_ITERS"),
             "max_steps": os.getenv("MAX_STEPS"),
@@ -207,6 +214,7 @@ class PipelineConfig(BaseModel):
             "train_max_seq_len": os.getenv("TRAIN_MAX_SEQ_LEN"),
             "eval_split": os.getenv("EVAL_SPLIT"),
             "eval_max_samples": os.getenv("EVAL_MAX_SAMPLES"),
+            "eval_compare_base_model": os.getenv("EVAL_COMPARE_BASE_MODEL"),
             "eval_enable_llm_judge": os.getenv("EVAL_ENABLE_LLM_JUDGE"),
             "eval_judge_max_samples": os.getenv("EVAL_JUDGE_MAX_SAMPLES"),
             "eval_judge_batch_size": os.getenv("EVAL_JUDGE_BATCH_SIZE"),
@@ -283,6 +291,10 @@ class PipelineConfig(BaseModel):
             raise ValueError("text_filter_max_near_duplicate_items must be >= 0.")
         if int(self.text_filter_max_reported_rows) < 0:
             raise ValueError("text_filter_max_reported_rows must be >= 0.")
+        if not 0.0 <= float(self.source_eval_ratio) <= 0.5:
+            raise ValueError("source_eval_ratio must be between 0.0 and 0.5.")
+        if int(self.source_eval_max_items) < 0:
+            raise ValueError("source_eval_max_items must be >= 0.")
         return self
 
     def train_config_dict(self) -> dict:

@@ -297,6 +297,10 @@ def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp
     assert result["metrics"]["training_modality"] == "text"
     assert result["training_health"]["gate_status"] == "pass"
     assert result["judge_summary"]["enabled"] is False
+    assert Path(result["base_predictions_path"]).exists()
+    assert Path(result["base_failures_path"]).exists()
+    assert result["lift_summary"]["enabled"] is True
+    assert result["lift_summary"]["failure_rate_delta"] == 0.0
 
 
 def test_eval_model_image_path_uses_vlm_loader(monkeypatch, tmp_path: Path) -> None:
@@ -345,3 +349,5 @@ def test_eval_model_image_path_uses_vlm_loader(monkeypatch, tmp_path: Path) -> N
     assert prediction["prediction"] == "A red square."
     assert result["metrics"]["training_modality"] == "image"
     assert result["judge_summary"]["enabled"] is False
+    assert Path(result["base_predictions_path"]).exists()
+    assert result["lift_summary"]["enabled"] is True

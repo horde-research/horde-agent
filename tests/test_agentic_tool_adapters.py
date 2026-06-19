@@ -29,6 +29,48 @@ class ExplodingTool:
         raise AssertionError("real tool should not be called in debug stub mode")
 
 
+class RecordingSftTool:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def execute(self, config: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(config)
+        input_path = Path(config["input_jsonl"])
+        rows = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        output_sft = Path(config["output_sft"])
+        output_annotations = Path(config["output_annotations"])
+        output_sft.parent.mkdir(parents=True, exist_ok=True)
+        output_annotations.parent.mkdir(parents=True, exist_ok=True)
+        with output_sft.open("w", encoding="utf-8") as handle:
+            for idx, row in enumerate(rows):
+                handle.write(
+                    json.dumps(
+                        {
+                            "messages": [
+                                {"role": "user", "content": f"Question {idx}"},
+                                {"role": "assistant", "content": "Answer"},
+                            ],
+                            "group_key": row.get("group_key"),
+                            "source_url": row.get("source_url"),
+                            "source_excerpt": row.get("source_excerpt"),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        output_annotations.write_text('{"success": true}\n', encoding="utf-8")
+        return {
+            "mode": config["mode"],
+            "num_items": len(rows),
+            "num_annotations": len(rows),
+            "num_examples": len(rows),
+            "num_failures": 0,
+            "annotations_path": str(output_annotations),
+            "sft_path": str(output_sft),
+            "prompt_preset": config.get("prompt_preset", "default"),
+        }
+
+
 def test_generate_taxonomy_adapter_flattens_queries(tmp_path: Path) -> None:
     taxonomy_tool = FakeTool(
         {
@@ -343,6 +385,54 @@ def test_build_sft_adapter_writes_text_quality(tmp_path: Path) -> None:
     quality = json.loads(quality_path.read_text(encoding="utf-8"))
     assert quality["exact_duplicate_count"] == 1
     assert result.artifacts["sft_text_quality_summary"]["num_records"] == 2
+
+
+def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> None:
+    collected_path = tmp_path / "sft" / "collected_texts.jsonl"
+    collected_path.parent.mkdir(parents=True)
+    collected_rows = [
+        {"text": "Source A text", "group_key": "source-a", "source_excerpt": "A"},
+        {"text": "Source B text", "group_key": "source-b", "source_excerpt": "B"},
+        {"text": "Source C text", "group_key": "source-c", "source_excerpt": "C"},
+        {"text": "Source D text", "group_key": "source-d", "source_excerpt": "D"},
+    ]
+    collected_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in collected_rows),
+        encoding="utf-8",
+    )
+    sft_tool = RecordingSftTool()
+    adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "sft_mode": "text",
+            "sft_target_language": "English",
+            "source_eval_ratio": 0.5,
+            "source_eval_max_items": 2,
+            "seed": 7,
+        },
+        artifacts={"collected_texts_jsonl": str(collected_path)},
+    )
+
+    result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
+
+    assert result.status == "success"
+    assert len(sft_tool.calls) == 2
+    assert result.artifacts["heldout_eval_sft_path"].endswith("heldout_eval_sft.jsonl")
+    assert Path(result.artifacts["heldout_eval_sft_path"]).exists()
+    summary = result.artifacts["source_split_summary"]
+    assert summary["split_strategy"] == "source_group"
+    assert summary["num_train_source_rows"] == 2
+    assert summary["num_eval_source_rows"] == 2
+    train_groups = {
+        json.loads(line)["group_key"]
+        for line in Path(sft_tool.calls[0]["input_jsonl"]).read_text(encoding="utf-8").splitlines()
+    }
+    eval_groups = {
+        json.loads(line)["group_key"]
+        for line in Path(sft_tool.calls[1]["input_jsonl"]).read_text(encoding="utf-8").splitlines()
+    }
+    assert train_groups.isdisjoint(eval_groups)
 
 
 def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:

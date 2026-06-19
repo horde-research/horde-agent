@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -244,6 +245,7 @@ class AgenticToolAdapter:
                 if image_manifest:
                     tool_config["image_manifest"] = str(image_manifest)
                 tool_config["image_exts"] = cfg.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
+                source_split: Dict[str, Any] = {}
             else:
                 input_jsonl = state.artifacts.get("collected_texts_jsonl")
                 if not input_jsonl:
@@ -252,12 +254,43 @@ class AgenticToolAdapter:
                         raise ValueError("data_path artifact is required for text SFT mode.")
                     input_jsonl = str(sft_dir / "collected_texts.jsonl")
                     _export_hf_dataset_to_jsonl(str(data_path), input_jsonl)
+                source_split = _prepare_text_source_split(
+                    str(input_jsonl),
+                    sft_dir,
+                    enabled=_as_bool(cfg.get("source_eval_enable", True)),
+                    ratio=_float_value(cfg.get("source_eval_ratio"), _float_value(cfg.get("dataset_val_ratio"), 0.1)),
+                    seed=_int_value(cfg.get("seed"), 42),
+                    max_eval_items=_int_value(cfg.get("source_eval_max_items"), 8),
+                )
+                input_jsonl = source_split.get("train_input_jsonl") or input_jsonl
                 tool_config["input_jsonl"] = str(input_jsonl)
                 tool_config["text_field"] = cfg.get("sft_text_field", "text")
 
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
             text_quality_artifacts = _write_sft_text_quality_artifacts(state, output)
+            heldout_eval_artifacts: Dict[str, Any] = {}
+            if mode == "text" and source_split.get("eval_input_jsonl") and report.passed:
+                eval_tool_config = {
+                    **tool_config,
+                    "input_jsonl": source_split["eval_input_jsonl"],
+                    "output_annotations": str(sft_dir / "heldout_eval_annotations.jsonl"),
+                    "output_sft": str(sft_dir / "heldout_eval_sft.jsonl"),
+                }
+                try:
+                    eval_output = self.tools["build_sft_dataset"].execute(eval_tool_config)
+                    heldout_eval_artifacts = {
+                        "heldout_eval_source_path": source_split.get("eval_input_jsonl"),
+                        "heldout_eval_sft_path": eval_output.get("sft_path"),
+                        "heldout_eval_annotations_path": eval_output.get("annotations_path"),
+                        "heldout_eval_num_examples": eval_output.get("num_examples"),
+                    }
+                except Exception as exc:
+                    logger.warning("Failed to build held-out source eval set: %s", exc)
+                    heldout_eval_artifacts = {
+                        "heldout_eval_source_path": source_split.get("eval_input_jsonl"),
+                        "heldout_eval_generation_error": f"{type(exc).__name__}: {exc}",
+                    }
             sft_artifacts = {
                 "sft_mode": output.get("mode"),
                 "training_modality": output.get("mode"),
@@ -265,6 +298,8 @@ class AgenticToolAdapter:
                 "annotations_path": output.get("annotations_path"),
                 "num_sft_examples": output.get("num_examples"),
                 "sft_prompt_preset": output.get("prompt_preset"),
+                "source_split_summary": source_split.get("summary") if mode == "text" else None,
+                **heldout_eval_artifacts,
                 **text_quality_artifacts,
             }
             hub_info = {}
@@ -393,8 +428,9 @@ class AgenticToolAdapter:
             cfg = state.config
             adapter_path = state.artifacts.get("adapter_path")
             dataset_ref = state.artifacts.get("dataset_ref") or {}
-            data_path = dataset_ref.get("data_path") or state.artifacts.get("sft_path") or cfg.get("data_path")
-            eval_split = dataset_ref.get("eval_split") or cfg.get("eval_split", "validation")
+            heldout_eval_path = state.artifacts.get("heldout_eval_sft_path")
+            data_path = heldout_eval_path or dataset_ref.get("data_path") or state.artifacts.get("sft_path") or cfg.get("data_path")
+            eval_split = "train" if heldout_eval_path else dataset_ref.get("eval_split") or cfg.get("eval_split", "validation")
             if not adapter_path:
                 raise ValueError("adapter_path artifact is required before evaluation.")
             if not data_path:
@@ -411,6 +447,7 @@ class AgenticToolAdapter:
                 "train_log_paths": state.artifacts.get("train_log_paths"),
                 "max_steps": cfg.get("max_steps"),
                 "eval_enable_llm_judge": cfg.get("eval_enable_llm_judge", False),
+                "eval_compare_base_model": cfg.get("eval_compare_base_model", True),
                 "eval_judge_max_samples": cfg.get("eval_judge_max_samples", 32),
                 "eval_judge_batch_size": cfg.get("eval_judge_batch_size", 3),
                 "eval_judge_batch_delay": cfg.get("eval_judge_batch_delay", 1.0),
@@ -446,6 +483,12 @@ class AgenticToolAdapter:
                 "eval_metrics": output.get("metrics"),
                 "training_health": output.get("training_health"),
                 "judge_summary": output.get("judge_summary"),
+                "base_predictions_path": output.get("base_predictions_path"),
+                "base_failures_path": output.get("base_failures_path"),
+                "base_judge_summary": output.get("base_judge_summary"),
+                "base_eval_metrics_path": output.get("base_eval_metrics_path"),
+                "eval_lift_summary": output.get("lift_summary"),
+                "eval_lift_summary_path": output.get("lift_summary_path"),
             }
             hub_info = _update_hf_adapter_card_if_configured(state, cfg, eval_artifacts, report)
             return ActionResult(
@@ -603,6 +646,118 @@ def _export_hf_dataset_to_jsonl(hf_dataset_path: str, jsonl_path: str) -> None:
     with open(jsonl_path, "w", encoding="utf-8") as handle:
         for row in dataset:
             handle.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
+
+
+def _prepare_text_source_split(
+    input_jsonl: str,
+    sft_dir: Path,
+    *,
+    enabled: bool,
+    ratio: float,
+    seed: int,
+    max_eval_items: int,
+) -> Dict[str, Any]:
+    rows = _read_jsonl_rows(input_jsonl)
+    summary: Dict[str, Any] = {
+        "enabled": enabled,
+        "split_strategy": "none",
+        "source_eval_ratio": ratio,
+        "num_source_rows": len(rows),
+        "num_train_source_rows": len(rows),
+        "num_eval_source_rows": 0,
+        "num_source_groups": 0,
+        "num_train_source_groups": 0,
+        "num_eval_source_groups": 0,
+    }
+    if not enabled or ratio <= 0.0 or len(rows) <= 1:
+        summary["reason"] = "disabled_or_insufficient_rows"
+        return {"train_input_jsonl": input_jsonl, "summary": summary}
+
+    group_by_row = [_source_group_key(row, idx) for idx, row in enumerate(rows)]
+    groups = sorted(set(group_by_row))
+    summary["num_source_groups"] = len(groups)
+    if len(groups) <= 1:
+        summary["reason"] = "insufficient_source_groups"
+        return {"train_input_jsonl": input_jsonl, "summary": summary}
+
+    shuffled_groups = list(groups)
+    random.Random(seed).shuffle(shuffled_groups)
+    eval_group_count = max(1, int(round(len(groups) * min(max(ratio, 0.0), 0.5))))
+    eval_group_count = min(eval_group_count, len(groups) - 1)
+    eval_groups = set(shuffled_groups[:eval_group_count])
+
+    train_rows: list[Dict[str, Any]] = []
+    eval_rows: list[Dict[str, Any]] = []
+    train_groups: set[str] = set()
+    actual_eval_groups: set[str] = set()
+    for row, group_key in zip(rows, group_by_row):
+        normalized_row = dict(row)
+        normalized_row.setdefault("group_key", group_key)
+        if group_key in eval_groups:
+            eval_rows.append(normalized_row)
+            actual_eval_groups.add(group_key)
+        else:
+            train_rows.append(normalized_row)
+            train_groups.add(group_key)
+
+    if max_eval_items > 0 and len(eval_rows) > max_eval_items:
+        eval_rows = eval_rows[:max_eval_items]
+        actual_eval_groups = {_source_group_key(row, idx) for idx, row in enumerate(eval_rows)}
+
+    if not train_rows or not eval_rows:
+        summary["reason"] = "empty_train_or_eval_split"
+        return {"train_input_jsonl": input_jsonl, "summary": summary}
+
+    train_path = sft_dir / "collected_texts_train_sources.jsonl"
+    eval_path = sft_dir / "collected_texts_eval_sources.jsonl"
+    _write_jsonl_rows(train_path, train_rows)
+    _write_jsonl_rows(eval_path, eval_rows)
+
+    summary.update(
+        {
+            "split_strategy": "source_group",
+            "num_train_source_rows": len(train_rows),
+            "num_eval_source_rows": len(eval_rows),
+            "num_train_source_groups": len(train_groups),
+            "num_eval_source_groups": len(actual_eval_groups),
+            "train_source_path": str(train_path),
+            "eval_source_path": str(eval_path),
+            "max_eval_items": max_eval_items,
+        }
+    )
+    return {
+        "train_input_jsonl": str(train_path),
+        "eval_input_jsonl": str(eval_path),
+        "summary": summary,
+    }
+
+
+def _read_jsonl_rows(path: str) -> list[Dict[str, Any]]:
+    rows: list[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            parsed = json.loads(line)
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+    return rows
+
+
+def _write_jsonl_rows(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
+
+
+def _source_group_key(row: Mapping[str, Any], idx: int) -> str:
+    for key in ("group_key", "source_url", "source_id", "url", "id"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return f"row:{idx}"
 
 
 def _train_config_dict(config: Mapping[str, Any]) -> Dict[str, Any]:
@@ -828,6 +983,7 @@ def _build_dataset_card(
     collection_quality = artifacts.get("collection_text_quality_summary") or {}
     sft_quality = artifacts.get("sft_text_quality_summary") or {}
     summary = dict(dataset_summary or artifacts.get("dataset_summary") or {})
+    source_split = artifacts.get("source_split_summary") if isinstance(artifacts.get("source_split_summary"), dict) else {}
     lines = [
         "---",
         "tags:",
@@ -852,6 +1008,7 @@ def _build_dataset_card(
                 ),
                 ("Target language", state.config.get("sft_target_language")),
                 ("SFT examples", artifacts.get("num_sft_examples")),
+                ("Held-out eval examples", artifacts.get("heldout_eval_num_examples")),
                 ("Split strategy", summary.get("split_strategy")),
                 ("Train rows", _nested(summary, "split_counts", "train")),
                 ("Validation rows", _nested(summary, "split_counts", "validation")),
@@ -867,6 +1024,9 @@ def _build_dataset_card(
                 ("Text rows before filter", text_filter.get("num_input")),
                 ("Text rows kept", text_filter.get("num_kept")),
                 ("Text rows removed", text_filter.get("num_removed")),
+                ("Source split strategy", source_split.get("split_strategy")),
+                ("Train source groups", source_split.get("num_train_source_groups")),
+                ("Eval source groups", source_split.get("num_eval_source_groups")),
                 ("Collection exact duplicate rate", collection_quality.get("exact_duplicate_rate")),
                 ("Collection URL duplicate rate", collection_quality.get("url_duplicate_rate")),
                 ("SFT exact duplicate rate", sft_quality.get("exact_duplicate_rate")),
@@ -920,6 +1080,9 @@ def _build_adapter_card(
     training_health = artifacts.get("training_health") if isinstance(artifacts.get("training_health"), dict) else {}
     if not training_health and isinstance(eval_metrics.get("training_health"), dict):
         training_health = eval_metrics["training_health"]
+    lift = artifacts.get("eval_lift_summary") if isinstance(artifacts.get("eval_lift_summary"), dict) else {}
+    if not lift and isinstance(eval_metrics.get("lift"), dict):
+        lift = eval_metrics["lift"]
     lines = [
         "---",
         "tags:",
@@ -961,6 +1124,9 @@ def _build_adapter_card(
                 ("Judge quality score", judge.get("quality_score")),
                 ("Judge major failure rate", judge.get("major_failure_rate")),
                 ("Unsupported grounding rate", judge.get("unsupported_grounding_rate")),
+                ("Quality score delta vs base", lift.get("quality_score_delta")),
+                ("Failure rate delta vs base", lift.get("failure_rate_delta")),
+                ("Unsupported grounding delta vs base", lift.get("unsupported_grounding_rate_delta")),
             ]
         ),
         "",
@@ -1054,6 +1220,9 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "mode": state.artifacts.get("sft_mode") or state.artifacts.get("training_modality"),
             "sft_path": state.artifacts.get("sft_path"),
             "num_examples": state.artifacts.get("num_sft_examples"),
+            "source_split": state.artifacts.get("source_split_summary"),
+            "heldout_eval_sft_path": state.artifacts.get("heldout_eval_sft_path"),
+            "heldout_eval_num_examples": state.artifacts.get("heldout_eval_num_examples"),
             "text_quality_path": state.artifacts.get("sft_text_quality_path"),
             "text_quality": state.artifacts.get("sft_text_quality_summary"),
             "dataset_repo_id": state.artifacts.get("dataset_repo_id"),
@@ -1078,6 +1247,10 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "failures_path": state.artifacts.get("failures_path"),
             "judge": state.artifacts.get("judge_summary"),
             "training_health": state.artifacts.get("training_health"),
+            "base_predictions_path": state.artifacts.get("base_predictions_path"),
+            "base_failures_path": state.artifacts.get("base_failures_path"),
+            "lift": state.artifacts.get("eval_lift_summary"),
+            "lift_path": state.artifacts.get("eval_lift_summary_path"),
         },
     }
 

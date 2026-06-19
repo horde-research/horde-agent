@@ -188,6 +188,24 @@ The judge reuses the configured `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` p
 
 When judge is enabled, deterministic string-similarity failures are kept as diagnostics, but the judge gate is the primary quality signal. If source metadata is available, the judge checks whether predictions are supported by retained source excerpts.
 
+## Held-Out Source Evaluation
+
+For text runs, `full_agentic` splits collected source groups before SFT annotation:
+
+- train source groups are converted into SFT examples for LoRA training.
+- held-out source groups are converted into eval-only QA examples and are never used for training.
+
+The split is deterministic by `SEED` and can be tuned from `.env`:
+
+```bash
+SOURCE_EVAL_ENABLE=true
+SOURCE_EVAL_RATIO=0.10
+SOURCE_EVAL_MAX_ITEMS=8
+EVAL_COMPARE_BASE_MODEL=true
+```
+
+When held-out eval examples exist, `evaluate_model` uses them instead of the internal dataset validation split. It first predicts with the base model, then predicts with the trained LoRA adapter on the same examples, and writes `eval/attempt_N/lift_summary.json` with deltas such as quality score, failure rate, major failure rate, and unsupported grounding rate.
+
 ## Hugging Face Uploads
 
 Set these in `.env` to publish artifacts from `full_agentic`:
@@ -205,7 +223,7 @@ Adapter upload happens only after real `train_model` succeeds. `debug_stub_train
 The upload path writes Hub `README.md` cards:
 
 - Dataset cards describe modality, source/filtering quality, duplicate diagnostics, and train/validation split metadata once `build_dataset` succeeds.
-- Adapter cards describe the base model, training settings/metrics, and are updated after `evaluate_model` with failure rate, train-health, judge quality, and unsupported-grounding metrics.
+- Adapter cards describe the base model, training settings/metrics, and are updated after `evaluate_model` with base-vs-adapter lift, failure rate, train-health, judge quality, and unsupported-grounding metrics.
 
 Upload repo ids, card update status, or upload errors are recorded in agent artifacts and the final report.
 
@@ -262,9 +280,9 @@ Local artifacts are written under `RUN_DIR`:
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.
 - `collect/`: raw collection output, text filter report, metadata, collection text-quality diagnostics, and optional image dedup reports.
-- `sft/`: annotations, SFT JSONL, and SFT text-quality diagnostics.
+- `sft/`: train-source annotations/SFT JSONL, held-out source eval JSONL when available, and SFT text-quality diagnostics.
 - `dataset/`: Hugging Face train/validation dataset.
-- `eval/attempt_N/`: validation outputs, deterministic diagnostics, clustered failures, and judge artifacts for each evaluation attempt.
+- `eval/attempt_N/`: adapter validation outputs, base-model validation outputs under `base/`, deterministic diagnostics, clustered failures, judge artifacts, and lift summary for each evaluation attempt.
 - Final report path is logged at the end when report generation succeeds.
 
 LangSmith traces are available in the project configured by `LANGSMITH_PROJECT` or `horde-agent`. Each run has a root span and one child span per stage.

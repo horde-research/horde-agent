@@ -125,6 +125,17 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
         lines.append("### SFT Dataset\n")
         lines.append(f"- Mode: {sft.get('mode') or 'unknown'}")
         lines.append(f"- Examples: {sft.get('num_examples', 0)}")
+        source_split = sft.get("source_split") if isinstance(sft.get("source_split"), dict) else {}
+        if source_split:
+            lines.append(f"- Source split: `{source_split.get('split_strategy') or 'none'}`")
+            lines.append(
+                "- Source groups train/eval: "
+                f"{source_split.get('num_train_source_groups', 0)}/{source_split.get('num_eval_source_groups', 0)}"
+            )
+        if sft.get("heldout_eval_sft_path"):
+            lines.append(f"- Held-out eval SFT path: `{sft['heldout_eval_sft_path']}`")
+        if sft.get("heldout_eval_num_examples") is not None:
+            lines.append(f"- Held-out eval examples: {sft['heldout_eval_num_examples']}")
         if sft.get("sft_path"):
             lines.append(f"- SFT path: `{sft['sft_path']}`")
         lines.extend(_format_text_quality(sft.get("text_quality"), path=sft.get("text_quality_path")))
@@ -170,6 +181,8 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Predictions path: `{eval_summary['predictions_path']}`")
         if eval_summary.get("failures_path"):
             lines.append(f"- Failures path: `{eval_summary['failures_path']}`")
+        if eval_summary.get("base_predictions_path"):
+            lines.append(f"- Base predictions path: `{eval_summary['base_predictions_path']}`")
         judge = eval_summary.get("judge") if isinstance(eval_summary.get("judge"), dict) else {}
         if judge:
             lines.append(f"- Judge gate: {judge.get('gate_status') or 'unknown'}")
@@ -182,6 +195,19 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
         )
         if training_health.get("gate_status"):
             lines.append(f"- Training health gate: {training_health['gate_status']}")
+        lift = eval_summary.get("lift") if isinstance(eval_summary.get("lift"), dict) else {}
+        if lift.get("enabled"):
+            if lift.get("quality_score_delta") is not None:
+                lines.append(f"- Quality score delta vs base: {lift['quality_score_delta']}")
+            if lift.get("failure_rate_delta") is not None:
+                lines.append(f"- Failure rate delta vs base: {lift['failure_rate_delta']}")
+            if lift.get("unsupported_grounding_rate_delta") is not None:
+                lines.append(
+                    "- Unsupported grounding delta vs base: "
+                    f"{lift['unsupported_grounding_rate_delta']}"
+                )
+        if eval_summary.get("lift_path"):
+            lines.append(f"- Lift summary path: `{eval_summary['lift_path']}`")
         lines.append("")
 
     if not lines:
