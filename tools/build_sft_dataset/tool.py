@@ -176,9 +176,29 @@ class BuildSftDatasetTool(BaseTool):
             if mode == "image":
                 parsed = parse_image_annotation(annotation["data"])
                 if isinstance(item, ImageItem):
-                    examples.extend(build_image_sft_examples(parsed, item.image_path))
+                    examples.extend(build_image_sft_examples(parsed, item.image_path, metadata=_image_metadata(item)))
             elif mode == "text":
                 parsed = parse_text_annotation(annotation["data"])
                 if isinstance(item, TextItem):
-                    examples.extend(build_text_sft_examples(parsed))
+                    examples.extend(build_text_sft_examples(parsed, metadata=_text_metadata(item)))
         return examples
+
+
+def _text_metadata(item: TextItem) -> Dict[str, Any]:
+    return {
+        "group_key": item.group_key or item.source_url or item.source_id or item.item_id,
+        "source_id": item.source_id or item.item_id,
+        "source_url": item.source_url,
+        "source_query": item.source_query,
+        "source_excerpt": item.source_excerpt,
+    }
+
+
+def _image_metadata(item: ImageItem) -> Dict[str, Any]:
+    return {
+        "group_key": item.group_key or item.image_path,
+        "source_url": item.source_url,
+        "source_image_url": item.source_image_url,
+        "source_query": item.source_query,
+        "source_excerpt": item.source_excerpt,
+    }

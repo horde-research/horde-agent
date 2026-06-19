@@ -94,6 +94,7 @@ class FakeJudgeClient:
                     success=True,
                     data={
                         "verdict": "pass" if index == 0 else "major_failure",
+                        "grounding": "supported" if index == 0 else "unsupported",
                         "categories": [] if index == 0 else ["irrelevant"],
                     },
                 )
@@ -152,7 +153,15 @@ def test_llm_judge_aggregates_major_failures(monkeypatch, tmp_path: Path) -> Non
         predictions_path,
         [
             {"id": 0, "input": "Q1", "prediction": "A1", "reference": "A1"},
-            {"id": 1, "input": "Q2", "prediction": "wrong", "reference": "A2"},
+            {
+                "id": 1,
+                "input": "Q2",
+                "prediction": "wrong",
+                "reference": "A2",
+                "source_url": "https://example.com/source",
+                "source_excerpt": "The answer is A2.",
+                "group_key": "source-1",
+            },
         ],
     )
     monkeypatch.setattr("tools.eval_model.eval.llm_judge.LLMClient.from_env", lambda **kwargs: FakeJudgeClient())
@@ -175,8 +184,12 @@ def test_llm_judge_aggregates_major_failures(monkeypatch, tmp_path: Path) -> Non
     assert summary["pass_count"] == 1
     assert summary["major_failure_count"] == 1
     assert summary["failure_category_counts"] == {"irrelevant": 1}
+    assert summary["grounding_counts"] == {"supported": 1, "unsupported": 1}
+    assert summary["unsupported_grounding_count"] == 1
     assert Path(summary["judge_results_path"]).exists()
-    assert "reason" not in Path(summary["judge_results_path"]).read_text(encoding="utf-8")
+    judge_text = Path(summary["judge_results_path"]).read_text(encoding="utf-8")
+    assert "reason" not in judge_text
+    assert "source-1" in judge_text
 
 
 def test_eval_validator_uses_judge_gate_over_heuristic_failure_rate(tmp_path: Path) -> None:
@@ -213,7 +226,18 @@ def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp
     test_dataset = tmp_path / "text_sft.jsonl"
     adapter_dir = tmp_path / "adapter"
     adapter_dir.mkdir()
-    _write_jsonl(test_dataset, [{"prompt": "What is the capital of France?", "response": "Paris."}])
+    _write_jsonl(
+        test_dataset,
+        [
+            {
+                "prompt": "What is the capital of France?",
+                "response": "Paris.",
+                "group_key": "source-france",
+                "source_url": "https://example.com/france",
+                "source_excerpt": "Paris is the capital city of France.",
+            }
+        ],
+    )
     metrics_path = tmp_path / "train_metrics.jsonl"
     _write_jsonl(metrics_path, [{"step": 1, "loss": 2.0}, {"step": 2, "loss": 1.0}])
     monkeypatch.setattr("tools.eval_model.tool.load_hf_causal_lm", lambda model_id: (FakeTextModel(), FakeTextTokenizer()))
@@ -234,6 +258,10 @@ def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp
     )
 
     assert Path(result["predictions_path"]).exists()
+    prediction = json.loads(Path(result["predictions_path"]).read_text(encoding="utf-8").splitlines()[0])
+    assert prediction["source_url"] == "https://example.com/france"
+    assert prediction["group_key"] == "source-france"
+    assert prediction["source_excerpt"] == "Paris is the capital city of France."
     assert Path(result["eval_metrics_path"]).exists()
     assert result["metrics"]["training_modality"] == "text"
     assert result["training_health"]["gate_status"] == "pass"

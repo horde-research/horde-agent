@@ -10,6 +10,7 @@ Requires: SERPER_API_KEY env var.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -108,13 +109,20 @@ class CollectDataTool(BaseTool):
         raw_path = run_dir / "serper_raw.json"
         raw_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        texts = _extract_texts(raw)
+        text_rows = _extract_text_rows(raw)
         if max_samples and max_samples > 0:
-            texts = texts[:max_samples]
-        if not texts:
-            texts = ["(no text collected)"]
+            text_rows = text_rows[:max_samples]
+        if not text_rows:
+            text_rows = [
+                {
+                    "text": "(no text collected)",
+                    "source_id": "empty",
+                    "group_key": "empty",
+                    "source_excerpt": "(no text collected)",
+                }
+            ]
 
-        dataset = Dataset.from_list([{"text": t} for t in texts])
+        dataset = Dataset.from_list(text_rows)
         dataset_dir = run_dir / "dataset"
         dataset.save_to_disk(str(dataset_dir))
 
@@ -366,16 +374,33 @@ async def _scrape_page(
 
 # ─── Text extraction ─────────────────────────────────────────────────────────
 
-def _extract_texts(raw: Dict[str, List[Dict[str, str]]]) -> List[str]:
-    texts: List[str] = []
+def _extract_text_rows(raw: Dict[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
     seen: set[str] = set()
-    for pages in raw.values():
+    for query, pages in raw.items():
         for page in pages:
             full = (page.get("full_text") or "").strip()
             if full and full not in seen:
                 seen.add(full)
-                texts.append(full)
-    return texts
+                url = str(page.get("url") or "").strip()
+                source_id = _source_id(url, full)
+                rows.append(
+                    {
+                        "text": full,
+                        "source_text": full,
+                        "source_excerpt": full[:2000],
+                        "source_url": url,
+                        "source_query": str(query),
+                        "source_id": source_id,
+                        "group_key": url or source_id,
+                    }
+                )
+    return rows
+
+
+def _source_id(url: str, text: str) -> str:
+    digest_source = url or text[:1000]
+    return hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:16]
 
 
 def _resolve_image_query_specs(config: Dict[str, Any], fallback_queries: List[str]) -> List[Any]:

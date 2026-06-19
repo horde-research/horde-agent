@@ -405,6 +405,25 @@ class TestBuildSftDataset:
                 sft_examples.append(json.loads(line))
         assert all("messages" in ex for ex in sft_examples)
 
+    def test_text_sft_examples_preserve_source_metadata(self):
+        from tools.build_sft_dataset.sft_builders import build_text_sft_examples, parse_text_annotation
+
+        metadata = {
+            "group_key": "source:https://example.com/kazakh-cuisine",
+            "source_id": "source-1",
+            "source_url": "https://example.com/kazakh-cuisine",
+            "source_query": "Kazakh cuisine",
+            "source_excerpt": "Beshbarmak is a traditional Kazakh dish.",
+        }
+
+        examples = build_text_sft_examples(parse_text_annotation(FAKE_TEXT_ANNOTATION), metadata=metadata)
+
+        assert examples
+        assert all(example["group_key"] == metadata["group_key"] for example in examples)
+        assert all(example["source_url"] == metadata["source_url"] for example in examples)
+        assert all(example["source_excerpt"] == metadata["source_excerpt"] for example in examples)
+        assert metadata["source_excerpt"] not in json.dumps(examples[0]["messages"])
+
     def test_sft_produces_valid_chat_format(self, mock_llm, run_dir):
         """Every SFT example must have user + assistant messages."""
         from tools.build_sft_dataset.tool import BuildSftDatasetTool

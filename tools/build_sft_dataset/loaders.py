@@ -17,6 +17,7 @@ def load_images(input_dir: str, exts: Iterable[str]) -> List[ImageItem]:
                     item_id=str(path),
                     image_path=str(path),
                     topic_hint=topic_hint,
+                    group_key=str(path),
                 )
             )
     return images
@@ -42,6 +43,11 @@ def load_images_from_manifest(manifest_path: str, exts: Iterable[str] | None = N
                 item_id=str(path),
                 image_path=str(path),
                 topic_hint=_image_topic_hint(record),
+                group_key=_image_group_key(record, path),
+                source_url=str(record.get("url") or "").strip() or None,
+                source_image_url=str(record.get("img_url") or "").strip() or None,
+                source_query=str(record.get("query") or "").strip() or None,
+                source_excerpt=_image_source_excerpt(record),
             )
         )
     return images
@@ -53,6 +59,20 @@ def _image_topic_hint(record: dict) -> str:
     query = str(record.get("query") or "").strip()
     parts = [part for part in (domain, subdomain, query) if part]
     return " / ".join(parts)
+
+
+def _image_group_key(record: dict, path: Path) -> str:
+    cluster_id = str(record.get("dedup_cluster_id") or "").strip()
+    if cluster_id:
+        return f"image_cluster:{cluster_id}"
+    return str(path)
+
+
+def _image_source_excerpt(record: dict) -> str | None:
+    before = str(record.get("context_text_before") or "").strip()
+    after = str(record.get("context_text_after") or "").strip()
+    excerpt = " ".join(part for part in (before, after) if part).strip()
+    return excerpt or None
 
 
 def load_texts_from_dir(input_dir: str) -> List[TextItem]:
@@ -75,5 +95,19 @@ def load_texts_from_jsonl(input_jsonl: str, text_field: str) -> List[TextItem]:
             if not text:
                 continue
             item_id = payload.get("id") or payload.get("source_id") or f"line_{i}"
-            items.append(TextItem(item_id=str(item_id), text=text))
+            source_id = str(payload.get("source_id") or item_id).strip()
+            source_url = str(payload.get("source_url") or payload.get("url") or "").strip()
+            source_excerpt = str(payload.get("source_excerpt") or text[:2000]).strip()
+            group_key = str(payload.get("group_key") or source_url or source_id or item_id).strip()
+            items.append(
+                TextItem(
+                    item_id=str(item_id),
+                    text=text,
+                    group_key=group_key or str(item_id),
+                    source_url=source_url or None,
+                    source_id=source_id or None,
+                    source_query=str(payload.get("source_query") or payload.get("query") or "").strip() or None,
+                    source_excerpt=source_excerpt or None,
+                )
+            )
     return items

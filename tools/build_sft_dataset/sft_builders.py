@@ -36,9 +36,11 @@ def _image_msg(image_path: str) -> Dict[str, Any]:
 def build_image_sft_examples(
     annotation: ImageAnnotation,
     image_path: str,
+    metadata: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     """Convert an ImageAnnotation into a list of chat-format SFT examples."""
     examples: List[Dict[str, Any]] = []
+    metadata = _clean_metadata(metadata or {})
 
     def _add(instruction: str, answer: str) -> None:
         examples.append({
@@ -52,6 +54,7 @@ def build_image_sft_examples(
                     "content": [_text_msg(answer)],
                 },
             ],
+            **metadata,
         })
 
     # caption
@@ -78,6 +81,7 @@ def build_image_sft_examples(
 
 def build_text_sft_examples(
     annotation: TextAnnotation,
+    metadata: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     """Convert a TextAnnotation into standalone SFT examples.
 
@@ -85,6 +89,7 @@ def build_text_sft_examples(
     a self-contained (question, answer) pair that embeds all knowledge.
     """
     examples: List[Dict[str, Any]] = []
+    metadata = _clean_metadata(metadata or {})
 
     def _add_single_turn(question: str, answer: str) -> None:
         examples.append({
@@ -92,6 +97,7 @@ def build_text_sft_examples(
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": answer},
             ],
+            **metadata,
         })
 
     # knowledge QA — 5 standalone expert Q&A pairs
@@ -119,9 +125,14 @@ def build_text_sft_examples(
             {"role": "user", "content": conv.follow_up_question},
             {"role": "assistant", "content": conv.follow_up_response},
         ],
+        **metadata,
     })
 
     return examples
+
+
+def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {str(key): value for key, value in metadata.items() if value not in (None, "", [], {})}
 
 
 # ─── serialisation ─────────────────────────────────────────────────────────────

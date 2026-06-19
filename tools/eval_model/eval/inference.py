@@ -51,6 +51,7 @@ def run_inference(
                 "input": prompt,
                 "prediction": pred_text,
                 "reference": reference,
+                **_prediction_metadata(example),
             }
         )
 
@@ -87,6 +88,7 @@ def run_image_inference(
                     "reference": reference,
                     "image_path": None,
                     "error": "missing_image",
+                    **_prediction_metadata(example),
                 }
             )
             continue
@@ -118,6 +120,7 @@ def run_image_inference(
                     "prediction": pred_text,
                     "reference": reference,
                     "image_path": image_path,
+                    **_prediction_metadata(example),
                 }
             )
         except Exception as exc:
@@ -129,6 +132,7 @@ def run_image_inference(
                     "reference": reference,
                     "image_path": image_path,
                     "error": f"image_eval_failed:{type(exc).__name__}:{exc}",
+                    **_prediction_metadata(example),
                 }
             )
 
@@ -180,6 +184,18 @@ def _content_parts(content: Any) -> tuple[list[str], list[str]]:
             elif item.get("text"):
                 texts.append(str(item["text"]))
     return [text for text in texts if text], images
+
+
+def _prediction_metadata(example: Dict[str, Any]) -> Dict[str, Any]:
+    keys = (
+        "group_key",
+        "source_id",
+        "source_url",
+        "source_query",
+        "source_excerpt",
+        "source_image_url",
+    )
+    return {key: example[key] for key in keys if example.get(key) not in (None, "", [], {})}
 
 
 def _strip_prompt_echo(generated: str, prompt: str) -> str:

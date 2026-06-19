@@ -12,6 +12,7 @@ from core.llm import LLMClient, LLMRequest
 PASS_VALUES = {"pass", "ok", "good", "none"}
 MINOR_VALUES = {"minor_issue", "minor", "warn", "warning", "partial"}
 MAJOR_VALUES = {"major_failure", "major", "fail", "bad"}
+GROUNDING_VALUES = {"supported", "unsupported", "insufficient_source"}
 
 
 JUDGE_SYSTEM_PROMPT = """You are a strict evaluator for supervised fine-tuning validation outputs.
@@ -78,6 +79,8 @@ def run_llm_judge(
                 }
             judged["input"] = source.get("input")
             judged["prediction"] = source.get("prediction")
+            judged["source_url"] = source.get("source_url")
+            judged["group_key"] = source.get("group_key")
             judged_rows.append(judged)
             handle.write(json.dumps(judged, ensure_ascii=False) + "\n")
 
@@ -107,6 +110,13 @@ def _judge_prompt(row: dict[str, Any], *, modality: str, target_language: str) -
         if modality == "image"
         else ""
     )
+    source_excerpt = str(row.get("source_excerpt") or "").strip()
+    source_url = str(row.get("source_url") or "").strip()
+    source_block = (
+        f"Source URL:\n{source_url or 'unspecified'}\n\nSource excerpt:\n{source_excerpt}\n"
+        if source_excerpt
+        else "Source excerpt:\nNot provided. Set grounding to insufficient_source.\n"
+    )
     return f"""
 Evaluate this validation answer.
 
@@ -114,6 +124,7 @@ Modality: {modality}
 Target language: {target_language or "unspecified"}
 {image_line}
 Judge semantic usefulness, not string similarity.
+When a source excerpt is provided, treat it as the primary evidence for factual support.
 The reference answer is the expected answer, but correct paraphrases are acceptable.
 Penalize answers that are factually wrong, contradict the reference, miss the core answer,
 hallucinate unsupported details, or fail the requested format.
@@ -127,6 +138,13 @@ Rubric:
 Allowed categories:
 wrong_fact, missing_key_point, hallucination, irrelevant, format, language, unsafe, other
 
+Grounding labels:
+- supported: the model answer is supported by the source excerpt or attached image.
+- unsupported: the model answer makes factual claims contradicted by or absent from provided evidence.
+- insufficient_source: no usable source evidence was provided.
+
+{source_block}
+
 User prompt:
 {row.get("input", "")}
 
@@ -139,6 +157,7 @@ Reference answer:
 Return JSON with exactly these keys:
 {{
   "verdict": "pass|minor_issue|major_failure",
+  "grounding": "supported|unsupported|insufficient_source",
   "categories": ["wrong_fact|missing_key_point|hallucination|irrelevant|format|language|unsafe|other"]
 }}
 """.strip()
@@ -146,11 +165,17 @@ Return JSON with exactly these keys:
 
 def _normalize_judgement(payload: dict[str, Any]) -> dict[str, Any]:
     verdict = _norm_verdict(payload.get("verdict"))
+    grounding = _norm_grounding(payload.get("grounding"))
     categories = _categories(payload.get("categories") or payload.get("failure_categories"))
+    if grounding == "unsupported":
+        verdict = "major_failure"
+        if not categories:
+            categories = ["hallucination"]
     major_failure = verdict == "major_failure"
     warning = verdict == "minor_issue"
     return {
         "verdict": verdict,
+        "grounding": grounding,
         "major_failure": major_failure,
         "warning": warning,
         "categories": categories,
@@ -165,18 +190,23 @@ def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_
     minor = sum(1 for row in rows if row.get("verdict") == "minor_issue")
     major = sum(1 for row in rows if row.get("major_failure"))
     category_counts: dict[str, int] = {}
+    grounding_counts: dict[str, int] = {}
     for row in rows:
+        grounding = str(row.get("grounding") or "insufficient_source")
+        grounding_counts[grounding] = grounding_counts.get(grounding, 0) + 1
         for category in row.get("categories") or row.get("failure_categories") or []:
             category_counts[str(category)] = category_counts.get(str(category), 0) + 1
     pass_rate = passes / num_judged if num_judged else 0.0
     minor_rate = minor / num_judged if num_judged else 0.0
     major_rate = major / num_judged if num_judged else 0.0
     quality_score = (passes + (0.5 * minor)) / num_judged if num_judged else 0.0
+    unsupported_grounding_count = grounding_counts.get("unsupported", 0)
+    unsupported_grounding_rate = unsupported_grounding_count / num_judged if num_judged else 0.0
     if not num_judged:
         gate_status = "pass"
-    elif major_rate > 0.2 or quality_score < 0.70:
+    elif major_rate > 0.2 or quality_score < 0.70 or unsupported_grounding_rate > 0.2:
         gate_status = "repair"
-    elif major_rate > 0.1 or quality_score < 0.85:
+    elif major_rate > 0.1 or quality_score < 0.85 or unsupported_grounding_rate > 0.1:
         gate_status = "warn"
     else:
         gate_status = "pass"
@@ -198,6 +228,9 @@ def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_
         "major_failure_rate": major_rate,
         "warning_rate": minor_rate,
         "failure_category_counts": category_counts,
+        "grounding_counts": grounding_counts,
+        "unsupported_grounding_count": unsupported_grounding_count,
+        "unsupported_grounding_rate": unsupported_grounding_rate,
     }
 
 
@@ -220,6 +253,9 @@ def disabled_judge_summary(out_dir: str) -> Dict[str, Any]:
         "major_failure_rate": 0.0,
         "warning_rate": 0.0,
         "failure_category_counts": {},
+        "grounding_counts": {},
+        "unsupported_grounding_count": 0,
+        "unsupported_grounding_rate": 0.0,
     }
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     Path(out_dir, "judge_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -235,6 +271,11 @@ def _norm_verdict(value: Any) -> str:
     if normalized in MAJOR_VALUES:
         return "major_failure"
     return "minor_issue"
+
+
+def _norm_grounding(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in GROUNDING_VALUES else "insufficient_source"
 
 
 def _categories(value: Any) -> list[str]:
