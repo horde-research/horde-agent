@@ -527,11 +527,18 @@ class AgenticToolAdapter:
     def execute_generate_report(self, state: PipelineState, request: ActionRequest) -> ActionResult:
         try:
             cfg = state.config
+            training_modality = _training_modality(cfg)
+            model_loader_key = cfg.get("model_loader_key")
+            if not model_loader_key or (training_modality == "image" and model_loader_key == "hf_causal_lm_default"):
+                model_loader_key = "hf_image_text_default" if training_modality == "image" else "hf_causal_lm_default"
+            trainer_key = cfg.get("trainer_key")
+            if not trainer_key or (training_modality == "image" and trainer_key == "static_sft_default"):
+                trainer_key = "vision_language_sft" if training_modality == "image" else "static_sft_default"
             component_selection = {
-                "dataset_loader_key": cfg.get("dataset_loader_key", f"hf_{_training_modality(cfg)}_default"),
-                "model_loader_key": cfg.get("model_loader_key", "hf_causal_lm_default"),
+                "dataset_loader_key": cfg.get("dataset_loader_key", f"hf_{training_modality}_default"),
+                "model_loader_key": model_loader_key,
                 "lora_preset_key": cfg.get("lora_preset_key", "lora_attn_small"),
-                "trainer_key": cfg.get("trainer_key", "static_sft_default"),
+                "trainer_key": trainer_key,
                 "hf_model_id": cfg.get("hf_model_id"),
                 "primary_metric": cfg.get("primary_metric", "eval_loss"),
                 "rationale": "agentic full mode selection",

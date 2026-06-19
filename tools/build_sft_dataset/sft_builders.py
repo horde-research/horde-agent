@@ -53,7 +53,7 @@ def build_image_sft_examples(
             "messages": [
                 {
                     "role": "user",
-                    "content": [_text_msg(instruction), _image_msg(image_path)],
+                    "content": [_image_msg(image_path), _text_msg(instruction)],
                 },
                 {
                     "role": "assistant",

@@ -541,8 +541,8 @@ class TestBuildSftDataset:
         examples = build_image_sft_examples(parsed, "/tmp/image.jpg")
 
         assert len(examples) == 1
-        assert examples[0]["messages"][0]["content"][0]["text"] == "Describe this image in detail."
-        assert examples[0]["messages"][0]["content"][1]["image"] == "/tmp/image.jpg"
+        assert examples[0]["messages"][0]["content"][0]["image"] == "/tmp/image.jpg"
+        assert examples[0]["messages"][0]["content"][1]["text"] == "Describe this image in detail."
         assert "round plate" in examples[0]["messages"][1]["content"][0]["text"]
 
     def test_image_sft_can_filter_legacy_multitask_annotation_to_vqa(self):
@@ -583,7 +583,7 @@ class TestBuildSftDataset:
         examples = build_image_sft_examples(parsed, "/tmp/image.jpg", tasks=["vqa"])
 
         assert len(examples) == 3
-        assert [example["messages"][0]["content"][0]["text"] for example in examples] == [
+        assert [example["messages"][0]["content"][1]["text"] for example in examples] == [
             "What color is the cup?",
             "How many dishes are visible?",
             "Where is the cup?",
@@ -645,7 +645,8 @@ class TestBuildSftDataset:
         annotation = json.loads(Path(result["annotations_path"]).read_text(encoding="utf-8").splitlines()[0])
         assert sorted(annotation["data"]) == ["caption", "info"]
         row = json.loads(Path(result["sft_path"]).read_text(encoding="utf-8").splitlines()[0])
-        assert row["messages"][0]["content"][1]["image"] == str(image_path)
+        assert row["messages"][0]["content"][0]["image"] == str(image_path)
+        assert row["messages"][0]["content"][1]["text"] == "Describe this image in detail."
         assert "golden fried dough" in row["messages"][1]["content"][0]["text"]
 
     def test_sft_produces_valid_chat_format(self, mock_llm, run_dir):

@@ -47,7 +47,7 @@ class VisionLanguageSFTCollator:
         prompts: list[str] = []
         images: list[Image.Image] = []
         for feature in features:
-            messages = feature.get("messages")
+            messages = _normalize_messages(feature.get("messages"))
             if not isinstance(messages, list):
                 raise ValueError("Image SFT rows must contain a 'messages' list.")
             image_paths = _extract_image_paths(messages)
@@ -62,7 +62,6 @@ class VisionLanguageSFTCollator:
             self.processor,
             prompts=prompts,
             images=images,
-            max_seq_len=self.max_seq_len,
         )
         input_ids = batch.get("input_ids")
         if input_ids is None:
@@ -110,8 +109,10 @@ class VisionLanguageSFTTrainer:
 
     def train(self) -> Dict[str, Any]:
         self.logger.info("Starting vision-language SFT training")
+        train_dataset = self._filter_overlong_examples(self.train_dataset, split_name="train")
+        eval_dataset = self._filter_overlong_examples(self.eval_dataset, split_name="validation")
 
-        eval_strategy_value = "steps" if self.eval_dataset is not None else "no"
+        eval_strategy_value = "steps" if eval_dataset is not None else "no"
         use_mps = (
             not torch.cuda.is_available()
             and getattr(torch.backends, "mps", None) is not None
@@ -146,8 +147,8 @@ class VisionLanguageSFTTrainer:
         trainer = Trainer(
             model=self.model,
             args=args,
-            train_dataset=self.train_dataset,
-            eval_dataset=self.eval_dataset,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
             data_collator=VisionLanguageSFTCollator(self.processor, max_seq_len=self.config.max_seq_len),
             callbacks=[JsonlMetricsCallback(str(self.metrics_path))],
         )
@@ -155,6 +156,57 @@ class VisionLanguageSFTTrainer:
         train_result = trainer.train()
         self.logger.info("Vision-language SFT training finished")
         return train_result.metrics
+
+    def _filter_overlong_examples(self, dataset, *, split_name: str):
+        if dataset is None:
+            return None
+        if len(dataset) == 0:
+            return dataset
+
+        kept_indices: list[int] = []
+        dropped = 0
+        for idx in range(len(dataset)):
+            feature = dataset[idx]
+            try:
+                if self._example_fits(feature):
+                    kept_indices.append(idx)
+                else:
+                    dropped += 1
+            except Exception as exc:
+                dropped += 1
+                self.logger.warning("Dropping %s example %s: %s", split_name, idx, exc)
+
+        if kept_indices and len(kept_indices) == len(dataset):
+            return dataset
+
+        if not kept_indices:
+            raise ValueError(f"All {split_name} examples exceed max_seq_len={self.config.max_seq_len} or failed preprocessing.")
+
+        self.logger.info(
+            "Filtered %s split for multimodal length: kept=%s dropped=%s max_seq_len=%s",
+            split_name,
+            len(kept_indices),
+            dropped,
+            self.config.max_seq_len,
+        )
+        return dataset.select(kept_indices)
+
+    def _example_fits(self, feature: Dict[str, Any]) -> bool:
+        messages = _normalize_messages(feature.get("messages"))
+        if not isinstance(messages, list):
+            raise ValueError("Image SFT rows must contain a 'messages' list.")
+        image_paths = _extract_image_paths(messages)
+        if not image_paths:
+            raise ValueError("Image SFT row has no image content item.")
+        if len(image_paths) > 1:
+            raise ValueError("Only one image per SFT row is supported in the first image trainer.")
+        prompt = _apply_chat_template(self.processor, messages)
+        image = _load_image(image_paths[0])
+        batch = _processor_call(self.processor, prompts=[prompt], images=[image])
+        input_ids = batch.get("input_ids")
+        if input_ids is None:
+            raise ValueError("Processor output must include input_ids.")
+        return int(input_ids.shape[-1]) <= int(self.config.max_seq_len)
 
 
 def _extract_image_paths(messages: Iterable[Dict[str, Any]]) -> list[str]:
@@ -171,6 +223,45 @@ def _extract_image_paths(messages: Iterable[Dict[str, Any]]) -> list[str]:
     return paths
 
 
+def _normalize_messages(messages: Any) -> Any:
+    if not isinstance(messages, list):
+        return messages
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            normalized.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            visual_items: list[dict[str, Any]] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    visual_items = []
+                    text_parts = []
+                    break
+                item_type = item.get("type")
+                if item_type == "text":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        text_parts.append(text)
+                elif item_type in {"image", "video"}:
+                    visual_item = {key: value for key, value in item.items() if value is not None}
+                    visual_items.append(visual_item)
+                else:
+                    visual_items = []
+                    text_parts = []
+                    break
+            if visual_items or text_parts:
+                message = dict(message)
+                if visual_items:
+                    message["content"] = [*visual_items, *[{"type": "text", "text": text} for text in text_parts]]
+                else:
+                    message["content"] = " ".join(text_parts).strip()
+        normalized.append(message)
+    return normalized
+
+
 def _apply_chat_template(processor, messages: list[dict[str, Any]]) -> str:
     if hasattr(processor, "apply_chat_template"):
         return processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
@@ -185,20 +276,16 @@ def _load_image(path: str) -> Image.Image:
         return image.convert("RGB")
 
 
-def _processor_call(processor, *, prompts: list[str], images: list[Image.Image], max_seq_len: int):
+def _processor_call(processor, *, prompts: list[str], images: list[Image.Image]):
     kwargs = {
         "text": prompts,
         "images": images,
         "return_tensors": "pt",
         "padding": True,
-        "truncation": True,
-        "max_length": max_seq_len,
     }
     try:
         return processor(**kwargs)
     except TypeError:
-        kwargs.pop("truncation", None)
-        kwargs.pop("max_length", None)
         return processor(**kwargs)
 
 

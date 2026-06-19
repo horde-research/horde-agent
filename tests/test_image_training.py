@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 
 import torch
+from datasets import Dataset
 from PIL import Image
 
 from core.registry.builtins import build_registry
-from core.types.pipeline_types import MetricsSummary
+from core.types.pipeline_types import MetricsSummary, TrainConfig
 from tools.train.tool import TrainTool
-from tools.train.trainers.vision_language_sft_trainer import VisionLanguageSFTCollator
+from tools.train.trainers.vision_language_sft_trainer import VisionLanguageSFTCollator, VisionLanguageSFTTrainer
 
 
 class FakeTokenizer:
@@ -36,6 +37,23 @@ class FakeProcessor:
         }
 
 
+class FilteringProcessor(FakeProcessor):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        self.templates.append(messages)
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text" and item.get("text") == "short prompt":
+                        return "short prompt"
+        return "very long prompt"
+
+    def __call__(self, **kwargs):
+        text = kwargs["text"][0]
+        length = 4 if "short" in text else 12
+        return {"input_ids": torch.zeros((1, length), dtype=torch.long)}
+
+
 def _write_image(path: Path) -> None:
     Image.new("RGB", (8, 8), color=(255, 0, 0)).save(path)
 
@@ -57,7 +75,7 @@ def test_vision_language_collator_loads_existing_image_sft_rows(tmp_path: Path) 
                             {"type": "image", "image": str(image_path)},
                         ],
                     },
-                    {"role": "assistant", "content": [{"type": "text", "text": "A red square."}]},
+                    {"role": "assistant", "content": "A red square."},
                 ]
             },
             {
@@ -69,7 +87,7 @@ def test_vision_language_collator_loads_existing_image_sft_rows(tmp_path: Path) 
                             {"type": "image", "image": str(image_path)},
                         ],
                     },
-                    {"role": "assistant", "content": [{"type": "text", "text": "Red."}]},
+                    {"role": "assistant", "content": "Red."},
                 ]
             },
         ]
@@ -79,6 +97,78 @@ def test_vision_language_collator_loads_existing_image_sft_rows(tmp_path: Path) 
     assert batch["pixel_values"].shape == (2, 3, 8, 8)
     assert batch["labels"].tolist() == [[1, 2, -100], [1, 3, 4]]
     assert len(processor.images) == 2
+
+
+def test_vision_language_collator_collapses_text_only_message_content(tmp_path: Path) -> None:
+    image_path = tmp_path / "sample.jpg"
+    _write_image(image_path)
+    processor = FakeProcessor()
+    collator = VisionLanguageSFTCollator(processor, max_seq_len=16)
+
+    collator(
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe this image."},
+                            {"type": "image", "image": str(image_path)},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "A red square."}]},
+                ]
+            }
+        ]
+    )
+
+    assert processor.templates[0][1]["content"] == "A red square."
+    assert processor.templates[0][0]["content"][0]["type"] == "image"
+
+
+def test_vision_language_trainer_filters_overlong_examples(tmp_path: Path) -> None:
+    image_path = tmp_path / "sample.jpg"
+    _write_image(image_path)
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": str(image_path)},
+                            {"type": "text", "text": "short prompt"},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "short answer"}]},
+                ]
+            },
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": str(image_path)},
+                            {"type": "text", "text": "very long prompt"},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "long answer"}]},
+                ]
+            },
+        ]
+    )
+    trainer = VisionLanguageSFTTrainer(
+        model=None,
+        tokenizer=FilteringProcessor(),
+        train_dataset=dataset,
+        eval_dataset=None,
+        out_dir=str(tmp_path / "out"),
+        config=TrainConfig(max_seq_len=6, max_steps=1),
+    )
+
+    filtered = trainer._filter_overlong_examples(dataset, split_name="train")
+
+    assert len(filtered) == 1
 
 
 def test_registry_exposes_image_training_components() -> None:

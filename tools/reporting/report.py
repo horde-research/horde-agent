@@ -54,11 +54,19 @@ def write_report(
     out_path = Path(out_dir) / "report.md"
     decisions_path = Path(out_dir) / "agent_decisions.jsonl"
     decisions = _read_jsonl(str(decisions_path))
+    dataset_example = None
+    dataset_summary_for_report = dict(dataset_summary)
+    if isinstance(dataset_summary_for_report.get("example"), dict):
+        dataset_example = dataset_summary_for_report.pop("example")
 
     lines: List[str] = []
     lines.append("# Agentic LoRA SFT Report\n")
     lines.append("## Dataset Summary\n")
-    lines.append("```\n" + json.dumps(dataset_summary, indent=2, ensure_ascii=False) + "\n```\n")
+    lines.append("```\n" + json.dumps(dataset_summary_for_report, indent=2, ensure_ascii=False) + "\n```\n")
+    if dataset_example:
+        lines.append("## Dataset Example\n")
+        lines.extend(_format_dataset_example(dataset_example))
+        lines.append("")
 
     lines.append("## Agent Decisions\n")
     lines.append("```\n" + json.dumps(decisions, indent=2, ensure_ascii=False) + "\n```\n")
@@ -70,6 +78,8 @@ def write_report(
     for record in iterations:
         lines.append(f"### Iteration {record.iter_idx}\n")
         lines.append("```\n" + json.dumps(record.model_dump(), indent=2, ensure_ascii=False) + "\n```\n")
+        if record.metrics.best_eval_loss is None and record.metrics.last_eval_loss is None:
+            lines.append("- Eval loss not recorded for this iteration; `eval_steps` may exceed `max_steps`.\n")
 
     lines.append("## Failure Clusters\n")
     lines.append("```\n" + json.dumps(cluster_preview, indent=2, ensure_ascii=False) + "\n```\n")
@@ -213,6 +223,48 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
     if not lines:
         lines.append("No pipeline summary was provided.\n")
     return lines
+
+
+def _format_dataset_example(example: Any) -> List[str]:
+    if not isinstance(example, dict):
+        return []
+    lines: List[str] = []
+    messages = example.get("messages") if isinstance(example.get("messages"), list) else []
+    if messages:
+        lines.append("```")
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role") or "unknown"
+            rendered = _render_message_content(message.get("content"))
+            lines.append(f"{role}: {rendered}")
+        lines.append("```")
+    metadata_lines = []
+    for key in ("group_key", "source_url", "source_image_url", "source_query"):
+        value = example.get(key)
+        if value not in (None, "", [], {}):
+            metadata_lines.append(f"- {key.replace('_', ' ').title()}: `{value}`")
+    lines.extend(metadata_lines)
+    return lines
+
+
+def _render_message_content(content: Any) -> str:
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "image":
+                image_ref = item.get("image") or item.get("path") or item.get("url")
+                if image_ref:
+                    parts.append(f"[image: {image_ref}]")
+            elif item_type == "text":
+                text = str(item.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+        return " ".join(parts).strip()
+    return str(content or "").strip()
 
 
 def _format_text_filter(summary: Any, *, path: Any = None) -> List[str]:
