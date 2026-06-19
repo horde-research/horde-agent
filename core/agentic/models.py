@@ -57,6 +57,7 @@ _STAGE_ARTIFACT_KEYS: dict[str, set[str]] = {
         "num_sft_examples",
         "sft_text_quality_path",
         "sft_text_quality_summary",
+        "image_sft_tasks",
         "source_registry_path",
         "source_registry_summary",
         "annotation_cache_path",

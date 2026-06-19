@@ -150,8 +150,11 @@ COLLECT_IMAGES=true
 ENABLE_IMAGE_TAXONOMY=true
 IMAGE_COLLECTION_MODE=serper
 IMAGE_TAXONOMY_MAX_SLOTS=3
+IMAGE_SFT_TASKS=caption
 HF_MODEL_ID=<image-text-model-id>
 ```
+
+`IMAGE_SFT_TASKS` controls which image labels become SFT rows. The default is `caption`, which asks the LLM for a compact caption-only annotation and trains only detailed image description. Other selectable values are `vqa`, `ocr`, `reason`, and `instruct_follow`; use a comma-separated list or `all`. Non-caption-only modes currently use the legacy full image annotation schema and then filter SFT rows to the selected tasks.
 
 Optional image near-duplicate filtering can run after image download and before image SFT annotation:
 

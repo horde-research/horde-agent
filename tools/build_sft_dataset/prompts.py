@@ -1,5 +1,7 @@
 from typing import Optional
 
+from core.data.image_sft_tasks import normalize_image_sft_tasks
+
 
 def _prompt_preset_instructions(prompt_preset: str, *, mode: str) -> str:
     preset = (prompt_preset or "default").strip().lower()
@@ -31,7 +33,9 @@ def build_image_prompt(
     target_language: str = "English",
     topic_hint: Optional[str] = None,
     prompt_preset: str = "default",
+    image_tasks: object = None,
 ) -> str:
+    tasks = normalize_image_sft_tasks(image_tasks)
     topic_line = ""
     if topic_hint:
         topic_line = (
@@ -41,6 +45,13 @@ def build_image_prompt(
             "what you actually see."
         )
     preset_line = _prompt_preset_instructions(prompt_preset, mode="image")
+    if tasks == ["caption"]:
+        return _build_caption_only_image_prompt(
+            target_language=target_language,
+            topic_line=topic_line,
+            prompt_preset=prompt_preset,
+            preset_line=preset_line,
+        )
 
     return f"""You are a world-class AI training-data engineer. Your sole purpose is to
 produce supervised fine-tuning (SFT) examples that will teach a vision-language
@@ -49,6 +60,7 @@ accuracy.{topic_line}
 
 Target language for ALL generated text: {target_language}
 Prompt preset: {prompt_preset}
+Selected SFT tasks: {", ".join(tasks)}
 {preset_line}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -214,6 +226,67 @@ Every text field must be in {target_language}.
   "ocr": {{"instruction": "..." | null, "answer": "..." | null}},
   "reason": {{"instruction": "...", "answer": "..."}},
   "instruct_follow": {{"instruction": "...", "answer": "..."}}
+}}"""
+
+
+def _build_caption_only_image_prompt(
+    *,
+    target_language: str,
+    topic_line: str,
+    prompt_preset: str,
+    preset_line: str,
+) -> str:
+    return f"""You are a world-class AI training-data engineer. Your sole purpose is to
+produce supervised fine-tuning (SFT) examples that teach a vision-language model
+to describe visual content accurately.{topic_line}
+
+Target language for ALL generated text: {target_language}
+Prompt preset: {prompt_preset}
+Selected SFT tasks: caption
+{preset_line}
+
+ABSOLUTE RULES
+1. Mention ONLY objects, attributes, actions, and spatial relationships that are
+   directly visible in the image.
+2. Do not use filler openings such as "The image shows", "This is a picture of",
+   or "In this image".
+3. Be concrete about colors, positions, materials, counts, and visible text.
+4. If the image is low quality, describe only what can be identified reliably.
+
+CAPTION REQUIREMENTS
+- Write one detailed caption in {target_language}.
+- Length: 4-8 sentences, 50-120 words.
+- Cover subject, setting/background, colors/materials, actions, spatial layout,
+  and notable details.
+- Include at least two spatial relationships and two specific color references
+  when visible.
+- Do not include opinion words such as beautiful, nice, interesting, or
+  impressive.
+
+OUTPUT
+Respond with a SINGLE valid JSON object — no markdown fences, no commentary.
+
+{{
+  "info": {{
+    "content_properties": {{
+      "quality": "High" | "Medium" | "Low/Blurry",
+      "primary_subject": "Person/People" | "Animal(s)" | "Vehicle(s)" | "Food" | "Object(s)" | "Scenery/Architecture" | "Other",
+      "object_count": <integer>,
+      "human_presence": "None" | "Single Person" | "Small Group (2-5)" | "Crowd (>5)",
+      "face_visibility": "Clear Faces" | "Obscured/No Faces" | "Not Applicable"
+    }},
+    "text_properties": {{
+      "contains_text": <boolean>,
+      "is_suitable_for_ocr": <boolean>,
+      "text_type": "Printed" | "Handwritten" | "Signage/Logo" | "Not Applicable"
+    }},
+    "task_suitability": {{
+      "is_suitable_for_counting": <boolean>,
+      "is_suitable_for_reasoning": <boolean>,
+      "is_suitable_for_multi_step_instruction": <boolean>
+    }}
+  }},
+  "caption": {{"text": "..."}}
 }}"""
 
 

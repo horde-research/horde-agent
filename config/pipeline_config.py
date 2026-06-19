@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from core.data.image_sft_tasks import normalize_image_sft_tasks
 
 
 class PipelineConfig(BaseModel):
@@ -94,6 +96,7 @@ class PipelineConfig(BaseModel):
     sft_target_language: str
     sft_prompt_preset: str = "default"
     sft_reuse_annotations: bool = True
+    image_sft_tasks: List[str] = Field(default_factory=lambda: ["caption"])
     source_eval_enable: bool = True
     source_eval_ratio: float = 0.1
     source_eval_max_items: int = 8
@@ -204,6 +207,7 @@ class PipelineConfig(BaseModel):
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
             "sft_prompt_preset": os.getenv("SFT_PROMPT_PRESET"),
             "sft_reuse_annotations": os.getenv("SFT_REUSE_ANNOTATIONS"),
+            "image_sft_tasks": os.getenv("IMAGE_SFT_TASKS"),
             "source_eval_enable": os.getenv("SOURCE_EVAL_ENABLE"),
             "source_eval_ratio": os.getenv("SOURCE_EVAL_RATIO"),
             "source_eval_max_items": os.getenv("SOURCE_EVAL_MAX_ITEMS"),
@@ -240,6 +244,8 @@ class PipelineConfig(BaseModel):
         if not isinstance(data, dict):
             return data
         values = dict(data)
+        if "image_sft_tasks" in values:
+            values["image_sft_tasks"] = normalize_image_sft_tasks(values.get("image_sft_tasks"))
         training_modality = values.get("training_modality")
         sft_mode = values.get("sft_mode")
         if training_modality is None and sft_mode is not None:
@@ -257,6 +263,7 @@ class PipelineConfig(BaseModel):
             raise ValueError("training_modality must be one of: text, image.")
         self.training_modality = normalized
         self.sft_mode = normalized
+        self.image_sft_tasks = normalize_image_sft_tasks(self.image_sft_tasks)
         if not 0.0 <= float(self.dataset_val_ratio) <= 0.5:
             raise ValueError("dataset_val_ratio must be between 0.0 and 0.5.")
         if int(self.coverage_min_text_samples) < 1:

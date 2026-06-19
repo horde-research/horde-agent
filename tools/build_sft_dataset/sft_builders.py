@@ -8,12 +8,16 @@ Text examples are STANDALONE — the source text is NOT included.
 import json
 from typing import Any, Dict, List
 
-from .schemas import ImageAnnotation, TextAnnotation
+from core.data.image_sft_tasks import normalize_image_sft_tasks
+from .schemas import ImageAnnotation, ImageCaptionAnnotation, TextAnnotation
 
 
 # ─── parsers ───────────────────────────────────────────────────────────────────
 
-def parse_image_annotation(payload: Dict[str, Any]) -> ImageAnnotation:
+def parse_image_annotation(payload: Dict[str, Any], tasks: Any = None) -> ImageAnnotation | ImageCaptionAnnotation:
+    normalized_tasks = normalize_image_sft_tasks(tasks)
+    if normalized_tasks == ["caption"]:
+        return ImageCaptionAnnotation.model_validate(payload)
     return ImageAnnotation.model_validate(payload)
 
 
@@ -34,13 +38,15 @@ def _image_msg(image_path: str) -> Dict[str, Any]:
 # ─── image SFT examples ───────────────────────────────────────────────────────
 
 def build_image_sft_examples(
-    annotation: ImageAnnotation,
+    annotation: ImageAnnotation | ImageCaptionAnnotation,
     image_path: str,
     metadata: Dict[str, Any] | None = None,
+    tasks: Any = None,
 ) -> List[Dict[str, Any]]:
     """Convert an ImageAnnotation into a list of chat-format SFT examples."""
     examples: List[Dict[str, Any]] = []
     metadata = _clean_metadata(metadata or {})
+    normalized_tasks = normalize_image_sft_tasks(tasks)
 
     def _add(instruction: str, answer: str) -> None:
         examples.append({
@@ -57,22 +63,26 @@ def build_image_sft_examples(
             **metadata,
         })
 
-    # caption
-    _add("Describe this image in detail.", annotation.caption.text)
+    if "caption" in normalized_tasks:
+        _add("Describe this image in detail.", annotation.caption.text)
 
-    # VQA (3-7 pairs)
-    for qa in annotation.vqa:
-        _add(qa.question, qa.answer)
+    if "vqa" in normalized_tasks and hasattr(annotation, "vqa"):
+        for qa in annotation.vqa:
+            _add(qa.question, qa.answer)
 
-    # OCR (only if present)
-    if annotation.ocr.instruction and annotation.ocr.answer:
+    if (
+        "ocr" in normalized_tasks
+        and hasattr(annotation, "ocr")
+        and annotation.ocr.instruction
+        and annotation.ocr.answer
+    ):
         _add(annotation.ocr.instruction, annotation.ocr.answer)
 
-    # reasoning
-    _add(annotation.reason.instruction, annotation.reason.answer)
+    if "reason" in normalized_tasks and hasattr(annotation, "reason"):
+        _add(annotation.reason.instruction, annotation.reason.answer)
 
-    # instruction following
-    _add(annotation.instruct_follow.instruction, annotation.instruct_follow.answer)
+    if "instruct_follow" in normalized_tasks and hasattr(annotation, "instruct_follow"):
+        _add(annotation.instruct_follow.instruction, annotation.instruct_follow.answer)
 
     return examples
 

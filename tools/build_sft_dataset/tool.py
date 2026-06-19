@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, Iterable, List
 
 from core.llm import LLMClient
+from core.data.image_sft_tasks import normalize_image_sft_tasks
 from tools.base_tool import BaseTool
 from tools.build_sft_dataset.agents import ImageAnnotationAgent, TextAnnotationAgent
 from tools.build_sft_dataset.loaders import (
@@ -66,6 +67,7 @@ class BuildSftDatasetTool(BaseTool):
                 'output_sft': str (output path),
                 'target_language': str (default 'English'),
                 'prompt_preset': str (default 'default'),
+                'image_tasks': list[str] or comma-separated str (image mode, default caption),
                 'batch_size': int,
                 'batch_delay': float,
             }
@@ -79,6 +81,7 @@ class BuildSftDatasetTool(BaseTool):
 
         target_language = config.get("target_language", "English")
         prompt_preset = config.get("prompt_preset", "default")
+        image_tasks = normalize_image_sft_tasks(config.get("image_tasks") or config.get("image_sft_tasks"))
         batch_size = config.get("batch_size", 5)
         batch_delay = config.get("batch_delay", 1.0)
         output_annotations = config.get("output_annotations", "annotations.jsonl")
@@ -104,6 +107,7 @@ class BuildSftDatasetTool(BaseTool):
                 batch_size=batch_size,
                 batch_delay=batch_delay,
                 prompt_preset=prompt_preset,
+                image_tasks=image_tasks,
             )
         else:
             agent = TextAnnotationAgent(
@@ -129,7 +133,7 @@ class BuildSftDatasetTool(BaseTool):
         logger.info("Annotation: %d success, %d failures.", success_count, len(failures))
 
         # Step 3: Build SFT examples
-        examples = self._build_examples(mode, annotations, items_map)
+        examples = self._build_examples(mode, annotations, items_map, image_tasks=image_tasks)
         logger.info("Built %d SFT examples.", len(examples))
 
         # Step 4: Save outputs
@@ -147,6 +151,7 @@ class BuildSftDatasetTool(BaseTool):
             "annotations_path": output_annotations,
             "sft_path": output_sft,
             "prompt_preset": prompt_preset,
+            "image_tasks": image_tasks if mode == "image" else None,
             "annotation_reuse": reuse_summary,
             "annotation_cache_path": reuse_summary.get("cache_path"),
         }
@@ -177,6 +182,8 @@ class BuildSftDatasetTool(BaseTool):
         mode: str,
         annotations: List[Dict[str, Any]],
         items_map: Dict[str, Any],
+        *,
+        image_tasks: List[str] | None = None,
     ) -> List[Dict[str, Any]]:
         examples: List[Dict[str, Any]] = []
         for annotation in annotations:
@@ -187,9 +194,16 @@ class BuildSftDatasetTool(BaseTool):
             if not item:
                 continue
             if mode == "image":
-                parsed = parse_image_annotation(annotation["data"])
+                parsed = parse_image_annotation(annotation["data"], tasks=image_tasks)
                 if isinstance(item, ImageItem):
-                    examples.extend(build_image_sft_examples(parsed, item.image_path, metadata=_image_metadata(item)))
+                    examples.extend(
+                        build_image_sft_examples(
+                            parsed,
+                            item.image_path,
+                            metadata=_image_metadata(item),
+                            tasks=image_tasks,
+                        )
+                    )
             elif mode == "text":
                 parsed = parse_text_annotation(annotation["data"])
                 if isinstance(item, TextItem):

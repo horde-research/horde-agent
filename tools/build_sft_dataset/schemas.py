@@ -110,6 +110,12 @@ class ImageAnnotation(BaseModel):
     instruct_follow: InstructFollowItem
 
 
+class ImageCaptionAnnotation(BaseModel):
+    """Caption-only image annotation."""
+    info: ImageInfo
+    caption: CaptionItem
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TEXT ANNOTATION — knowledge distillation (standalone, no source in training)
 # ═══════════════════════════════════════════════════════════════════════════════

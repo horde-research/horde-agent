@@ -336,6 +336,7 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     assert called_config["input_dir"] == str(images_dir)
     assert called_config["image_manifest"] == str(images_index)
     assert called_config["prompt_preset"] == "schema_strict"
+    assert called_config["image_tasks"] == ["caption"]
     assert "input_jsonl" not in called_config
     assert result.status == "success"
     assert result.quality_report and result.quality_report.passed
@@ -641,6 +642,26 @@ def test_pipeline_config_syncs_training_modality_and_legacy_sft_mode(tmp_path: P
 
     assert legacy_cfg.training_modality == "image"
     assert legacy_cfg.sft_mode == "image"
+
+
+def test_pipeline_config_normalizes_image_sft_tasks() -> None:
+    cfg = PipelineConfig(
+        country="Kazakhstan",
+        sft_target_language="English",
+        hf_model_id="test-model",
+        image_sft_tasks="caption,vqa,ocr",
+    )
+
+    assert cfg.image_sft_tasks == ["caption", "vqa", "ocr"]
+
+    all_cfg = PipelineConfig(
+        country="Kazakhstan",
+        sft_target_language="English",
+        hf_model_id="test-model",
+        image_sft_tasks="all",
+    )
+
+    assert all_cfg.image_sft_tasks == ["caption", "vqa", "ocr", "reason", "instruct_follow"]
 
 
 def test_real_train_tool_fails_fast_for_unsupported_modality(tmp_path: Path) -> None:

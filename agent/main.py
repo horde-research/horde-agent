@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Which collected modality is converted to SFT and used for training",
     )
+    parser.add_argument(
+        "--image-sft-tasks",
+        default=None,
+        help="Comma-separated image SFT tasks: caption,vqa,ocr,reason,instruct_follow, or all",
+    )
     parser.add_argument("--search_trials", type=int, default=None, help="Random search trials before training")
     parser.add_argument("--debug-stub-train", action="store_true", help="Skip real training and emit a valid dummy adapter")
     parser.add_argument("--debug-stub-eval", action="store_true", help="Skip real model evaluation and emit happy-path eval artifacts")
@@ -196,6 +201,8 @@ def main() -> None:
         overrides["hf_model_id"] = args.hf_model_id
     if args.training_modality:
         overrides["training_modality"] = args.training_modality
+    if args.image_sft_tasks:
+        overrides["image_sft_tasks"] = args.image_sft_tasks
     if args.search_trials is not None:
         overrides["search_trials"] = args.search_trials
     if args.debug_stub_train:

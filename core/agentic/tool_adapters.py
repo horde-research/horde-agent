@@ -22,6 +22,7 @@ from core.data.text_quality import (
     summarize_text_quality,
     write_text_quality_report,
 )
+from core.data.image_sft_tasks import normalize_image_sft_tasks
 from core.agentic.validators import (
     validate_collection_output,
     validate_dataset_output,
@@ -246,6 +247,7 @@ class AgenticToolAdapter:
                 if image_manifest:
                     tool_config["image_manifest"] = str(image_manifest)
                 tool_config["image_exts"] = cfg.get("image_exts", [".jpg", ".jpeg", ".png", ".webp"])
+                tool_config["image_tasks"] = normalize_image_sft_tasks(cfg.get("image_sft_tasks"))
                 source_split: Dict[str, Any] = {}
                 source_registry: Dict[str, Any] = {}
             else:
@@ -310,6 +312,7 @@ class AgenticToolAdapter:
                 "annotations_path": output.get("annotations_path"),
                 "num_sft_examples": output.get("num_examples"),
                 "sft_prompt_preset": output.get("prompt_preset"),
+                "image_sft_tasks": output.get("image_tasks") if mode == "image" else None,
                 "source_registry_path": source_registry.get("source_registry_path") if mode == "text" else None,
                 "source_registry_summary": source_registry.get("summary") if mode == "text" else None,
                 "annotation_cache_path": output.get("annotation_cache_path"),
@@ -1155,6 +1158,7 @@ def _build_dataset_card(
                     "Training modality",
                     artifacts.get("training_modality") or artifacts.get("sft_mode") or _training_modality(state.config),
                 ),
+                ("Image SFT tasks", ", ".join(artifacts.get("image_sft_tasks") or []) or None),
                 ("Target language", state.config.get("sft_target_language")),
                 ("SFT examples", artifacts.get("num_sft_examples")),
                 ("Held-out eval examples", artifacts.get("heldout_eval_num_examples")),

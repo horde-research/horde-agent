@@ -509,6 +509,145 @@ class TestBuildSftDataset:
         assert all(example["source_excerpt"] == metadata["source_excerpt"] for example in examples)
         assert metadata["source_excerpt"] not in json.dumps(examples[0]["messages"])
 
+    def test_image_sft_defaults_to_caption_only_examples(self):
+        from tools.build_sft_dataset.sft_builders import build_image_sft_examples, parse_image_annotation
+
+        annotation_payload = {
+            "info": {
+                "content_properties": {
+                    "quality": "High",
+                    "primary_subject": "Food",
+                    "object_count": 1,
+                    "human_presence": "None",
+                    "face_visibility": "Not Applicable",
+                },
+                "text_properties": {
+                    "contains_text": False,
+                    "is_suitable_for_ocr": False,
+                    "text_type": "Not Applicable",
+                },
+                "task_suitability": {
+                    "is_suitable_for_counting": False,
+                    "is_suitable_for_reasoning": False,
+                    "is_suitable_for_multi_step_instruction": False,
+                },
+            },
+            "caption": {
+                "text": "A round plate holds sliced fruit arranged in a neat circle on a white table."
+            },
+        }
+
+        parsed = parse_image_annotation(annotation_payload, tasks=["caption"])
+        examples = build_image_sft_examples(parsed, "/tmp/image.jpg")
+
+        assert len(examples) == 1
+        assert examples[0]["messages"][0]["content"][0]["text"] == "Describe this image in detail."
+        assert examples[0]["messages"][0]["content"][1]["image"] == "/tmp/image.jpg"
+        assert "round plate" in examples[0]["messages"][1]["content"][0]["text"]
+
+    def test_image_sft_can_filter_legacy_multitask_annotation_to_vqa(self):
+        from tools.build_sft_dataset.sft_builders import build_image_sft_examples, parse_image_annotation
+
+        annotation_payload = {
+            "info": {
+                "content_properties": {
+                    "quality": "High",
+                    "primary_subject": "Object(s)",
+                    "object_count": 2,
+                    "human_presence": "None",
+                    "face_visibility": "Not Applicable",
+                },
+                "text_properties": {
+                    "contains_text": False,
+                    "is_suitable_for_ocr": False,
+                    "text_type": "Not Applicable",
+                },
+                "task_suitability": {
+                    "is_suitable_for_counting": True,
+                    "is_suitable_for_reasoning": True,
+                    "is_suitable_for_multi_step_instruction": True,
+                },
+            },
+            "caption": {"text": "A blue cup sits beside a red bowl on a wooden table."},
+            "vqa": [
+                {"question": "What color is the cup?", "answer": "The cup is blue."},
+                {"question": "How many dishes are visible?", "answer": "Two dishes are visible."},
+                {"question": "Where is the cup?", "answer": "The cup is beside the bowl."},
+            ],
+            "ocr": {"instruction": None, "answer": None},
+            "reason": {"instruction": "What can be inferred?", "answer": "The objects are on a table."},
+            "instruct_follow": {"instruction": "List the colors.", "answer": "Blue and red."},
+        }
+
+        parsed = parse_image_annotation(annotation_payload, tasks=["vqa"])
+        examples = build_image_sft_examples(parsed, "/tmp/image.jpg", tasks=["vqa"])
+
+        assert len(examples) == 3
+        assert [example["messages"][0]["content"][0]["text"] for example in examples] == [
+            "What color is the cup?",
+            "How many dishes are visible?",
+            "Where is the cup?",
+        ]
+
+    def test_image_mode_caption_only_from_manifest(self, mock_llm, run_dir):
+        from tools.build_sft_dataset.tool import BuildSftDatasetTool
+
+        image_path = Path(run_dir) / "images" / "food.jpg"
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(b"fake-image")
+        manifest_path = Path(run_dir) / "images.json"
+        manifest_path.write_text(json.dumps([{"file_path": str(image_path)}]), encoding="utf-8")
+        caption_payload = {
+            "info": {
+                "content_properties": {
+                    "quality": "High",
+                    "primary_subject": "Food",
+                    "object_count": 1,
+                    "human_presence": "None",
+                    "face_visibility": "Not Applicable",
+                },
+                "text_properties": {
+                    "contains_text": False,
+                    "is_suitable_for_ocr": False,
+                    "text_type": "Not Applicable",
+                },
+                "task_suitability": {
+                    "is_suitable_for_counting": False,
+                    "is_suitable_for_reasoning": False,
+                    "is_suitable_for_multi_step_instruction": False,
+                },
+            },
+            "caption": {
+                "text": "A white plate holds golden fried dough pieces arranged beside a small patterned cup."
+            },
+        }
+        seen_prompts: list[str] = []
+
+        def _fake_batch(requests, *, batch_size=5, batch_delay_seconds=1.5):
+            seen_prompts.extend(request.user_message for request in requests)
+            return [_make_fake_llm_response(caption_payload, request.request_id) for request in requests]
+
+        mock_llm.generate_json_batch_sync = _fake_batch
+
+        result = BuildSftDatasetTool().execute({
+            "mode": "image",
+            "image_manifest": str(manifest_path),
+            "output_annotations": os.path.join(run_dir, "image_ann.jsonl"),
+            "output_sft": os.path.join(run_dir, "image_sft.jsonl"),
+            "image_tasks": ["caption"],
+            "batch_size": 1,
+            "batch_delay": 0.0,
+        })
+
+        assert result["image_tasks"] == ["caption"]
+        assert result["num_examples"] == 1
+        assert "Selected SFT tasks: caption" in seen_prompts[0]
+        annotation = json.loads(Path(result["annotations_path"]).read_text(encoding="utf-8").splitlines()[0])
+        assert sorted(annotation["data"]) == ["caption", "info"]
+        row = json.loads(Path(result["sft_path"]).read_text(encoding="utf-8").splitlines()[0])
+        assert row["messages"][0]["content"][1]["image"] == str(image_path)
+        assert "golden fried dough" in row["messages"][1]["content"][0]["text"]
+
     def test_sft_produces_valid_chat_format(self, mock_llm, run_dir):
         """Every SFT example must have user + assistant messages."""
         from tools.build_sft_dataset.tool import BuildSftDatasetTool
