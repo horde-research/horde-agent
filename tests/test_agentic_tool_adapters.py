@@ -452,6 +452,31 @@ def test_collection_validator_fails_image_gate_when_images_requested_without_ima
     assert "num_images_below_minimum" in report.blocking_issues
 
 
+def test_collection_validator_fails_when_text_filter_removes_all_rows(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+
+    report = validate_collection_output(
+        {
+            "data_path": str(dataset_dir),
+            "num_samples": 1,
+            "metadata": {
+                "text_filter_summary": {
+                    "enabled": True,
+                    "num_input": 4,
+                    "num_kept": 0,
+                    "num_removed": 4,
+                    "removal_rate": 1.0,
+                }
+            },
+        }
+    )
+
+    assert not report.passed
+    assert "text_filter_removed_all_samples" in report.blocking_issues
+    assert report.metrics["text_filter_removed"] == 4
+
+
 def test_sft_validator_requires_examples_and_sft_path(tmp_path: Path) -> None:
     missing_report = validate_sft_output({"num_examples": 0, "sft_path": str(tmp_path / "missing.jsonl")})
     assert not missing_report.passed

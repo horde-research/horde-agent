@@ -80,14 +80,33 @@ def validate_collection_output(
     metadata = output.get("metadata") or {}
     num_samples = int(output.get("num_samples") or 0)
     num_images = int(metadata.get("num_images") or 0)
+    text_filter = metadata.get("text_filter_summary") if isinstance(metadata.get("text_filter_summary"), dict) else {}
+    text_filter_input = _safe_int(text_filter.get("num_input"))
+    text_filter_kept = _safe_int(text_filter.get("num_kept"))
+    text_filter_removed = _safe_int(text_filter.get("num_removed"))
+    text_filter_removal_rate = _safe_float(text_filter.get("removal_rate"))
 
     blocking_issues: List[str] = []
+    warnings: List[str] = []
     recommended_actions: List[str] = []
     suggested_adjustments: Dict[str, Any] = {}
     if num_samples < min_samples:
         blocking_issues.append("num_samples_below_minimum")
         recommended_actions.append("increase_collection_coverage")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
+    if text_filter.get("enabled") and text_filter_input > 0 and text_filter_kept == 0:
+        blocking_issues.append("text_filter_removed_all_samples")
+        recommended_actions.append("expand_collection_or_relax_text_filter")
+        suggested_adjustments.update(
+            {
+                "serper_results_per_query": "increase",
+                "serper_top_results": "increase",
+                "text_filter_min_chars": "decrease",
+                "text_filter_min_words": "decrease",
+            }
+        )
+    elif text_filter.get("enabled") and text_filter_removal_rate > 0.6:
+        warnings.append("text_filter_removed_many_samples")
     if not _path_exists(output.get("data_path")):
         blocking_issues.append("data_path_missing")
     if collect_images:
@@ -117,17 +136,22 @@ def validate_collection_output(
     return QualityReport(
         stage=ActionType.COLLECT_DATA,
         passed=not blocking_issues,
-        gate_status=_gate_status(blocking_issues, []),
-        decision=_decision_from_gate_status(_gate_status(blocking_issues, [])),
+        gate_status=_gate_status(blocking_issues, warnings),
+        decision=_decision_from_gate_status(_gate_status(blocking_issues, warnings)),
         score=1.0 if not blocking_issues else 0.0,
         recoverable=True,
-        issue_categories=_issue_categories(blocking_issues, []),
+        issue_categories=_issue_categories(blocking_issues, warnings),
         blocking_issues=blocking_issues,
+        warnings=warnings,
         metrics={
             "num_samples": num_samples,
             "num_images": num_images,
             "image_slot_count": slot_count,
             "num_image_taxonomy_slots": int(metadata.get("num_image_taxonomy_slots") or 0),
+            "text_filter_input": text_filter_input,
+            "text_filter_kept": text_filter_kept,
+            "text_filter_removed": text_filter_removed,
+            "text_filter_removal_rate": text_filter_removal_rate,
         },
         recommended_actions=recommended_actions,
         suggested_adjustments=suggested_adjustments,
@@ -266,6 +290,13 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
         blocking_issues.append("eval_judge_quality_failure")
     elif judge_enabled and judge.get("gate_status") == "warn":
         warnings.append("eval_judge_quality_warn")
+    unsupported_grounding_rate = _safe_float(judge.get("unsupported_grounding_rate")) if isinstance(judge, dict) else 0.0
+    if judge_enabled and unsupported_grounding_rate > 0.2:
+        blocking_issues.append("eval_grounding_failure")
+        labels.append("grounding_unsupported")
+        suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
+    elif judge_enabled and unsupported_grounding_rate > 0.1:
+        warnings.append("eval_grounding_warn")
     if any(_has_any(label, ("knowledge", "missing", "coverage", "hallucination", "grounding")) for label in labels):
         blocking_issues.append("eval_knowledge_missing")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
@@ -291,6 +322,7 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
             "training_health_gate": training_health.get("gate_status") if isinstance(training_health, dict) else None,
             "judge_gate": judge.get("gate_status") if isinstance(judge, dict) else None,
             "judge_major_failure_rate": judge.get("major_failure_rate") if isinstance(judge, dict) else None,
+            "judge_unsupported_grounding_rate": unsupported_grounding_rate,
         },
         recommended_actions=recommended_actions,
         suggested_adjustments=suggested_adjustments,
@@ -360,6 +392,20 @@ def _judge_labels(judge: Any) -> List[str]:
 
 def _has_any(value: str, needles: tuple[str, ...]) -> bool:
     return any(needle in value for needle in needles)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _gate_status(blocking_issues: List[str], warnings: List[str], *, recoverable: bool = True) -> str:

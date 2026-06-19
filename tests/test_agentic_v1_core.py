@@ -214,6 +214,94 @@ def test_policy_routes_eval_knowledge_failure_back_to_collection(tmp_path: Path)
     assert action.config_delta["serper_results_per_query"] == 15
 
 
+def test_policy_routes_eval_grounding_failure_to_source_collection(tmp_path: Path) -> None:
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"serper_results_per_query": 10, "serper_top_results": 5, "coverage_min_text_samples": 3},
+    )
+    state.last_action_result = ActionResult(
+        action_type=ActionType.EVALUATE_MODEL,
+        status="failed",
+        artifacts={"judge_summary": {"unsupported_grounding_rate": 0.5}},
+        quality_report=QualityReport(
+            stage=ActionType.EVALUATE_MODEL,
+            passed=False,
+            score=0.1,
+            recoverable=True,
+            blocking_issues=["eval_judge_quality_failure", "eval_grounding_failure"],
+        ),
+    )
+
+    action = choose_next_action(state)
+
+    assert action.action_type == ActionType.COLLECT_DATA
+    assert action.reason == "recovery_eval_requests_grounded_sources"
+    assert action.config_delta["serper_results_per_query"] == 15
+    assert action.config_delta["coverage_min_text_samples"] == 5
+
+
+def test_policy_expands_collection_and_relaxes_filter_when_all_text_removed(tmp_path: Path) -> None:
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "serper_results_per_query": 10,
+            "serper_top_results": 5,
+            "text_filter_min_chars": 300,
+            "text_filter_min_words": 40,
+            "text_filter_shingle_threshold": 0.90,
+        },
+    )
+    state.last_action_result = ActionResult(
+        action_type=ActionType.COLLECT_DATA,
+        status="failed",
+        artifacts={
+            "text_filter_summary": {
+                "enabled": True,
+                "num_input": 5,
+                "num_kept": 0,
+                "num_removed": 5,
+                "removed_reason_counts": {"too_short_chars": 4, "near_duplicate_text": 1},
+            }
+        },
+        quality_report=QualityReport(
+            stage=ActionType.COLLECT_DATA,
+            passed=False,
+            recoverable=True,
+            blocking_issues=["text_filter_removed_all_samples"],
+        ),
+    )
+
+    action = choose_next_action(state)
+
+    assert action.action_type == ActionType.COLLECT_DATA
+    assert action.reason == "recovery_expand_collection_after_text_filter"
+    assert action.config_delta["serper_results_per_query"] == 15
+    assert action.config_delta["text_filter_min_chars"] == 240
+    assert action.config_delta["text_filter_min_words"] == 32
+
+
+def test_policy_enables_judge_for_heuristic_eval_failure(tmp_path: Path) -> None:
+    state = PipelineState(run_dir=str(tmp_path), config={"eval_enable_llm_judge": False})
+    state.last_action_result = ActionResult(
+        action_type=ActionType.EVALUATE_MODEL,
+        status="failed",
+        metrics={"failure_rate": 1.0},
+        quality_report=QualityReport(
+            stage=ActionType.EVALUATE_MODEL,
+            passed=False,
+            score=0.1,
+            recoverable=True,
+            blocking_issues=["eval_failure_rate_too_high"],
+        ),
+    )
+
+    action = choose_next_action(state)
+
+    assert action.action_type == ActionType.EVALUATE_MODEL
+    assert action.reason == "recovery_enable_llm_judge_for_eval"
+    assert action.config_delta == {"eval_enable_llm_judge": True}
+
+
 def test_policy_stops_after_retry_limit(tmp_path: Path) -> None:
     state = PipelineState(run_dir=str(tmp_path), max_stage_retries=1)
     state.retry_counts[ActionType.COLLECT_DATA.value] = 1

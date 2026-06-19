@@ -222,6 +222,37 @@ def test_eval_validator_uses_judge_gate_over_heuristic_failure_rate(tmp_path: Pa
     assert "eval_failure_clusters_present" not in report.warnings
 
 
+def test_eval_validator_flags_unsupported_grounding(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text("{}", encoding="utf-8")
+    failures_path.write_text("{}", encoding="utf-8")
+
+    report = validate_eval_output(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": []},
+            "metrics": {
+                "failure_rate": 0.0,
+                "training_health": {"gate_status": "pass"},
+                "judge": {
+                    "enabled": True,
+                    "gate_status": "repair",
+                    "major_failure_rate": 0.0,
+                    "unsupported_grounding_rate": 0.5,
+                    "failure_category_counts": {},
+                },
+            },
+        }
+    )
+
+    assert not report.passed
+    assert "eval_grounding_failure" in report.blocking_issues
+    assert "eval_knowledge_missing" in report.blocking_issues
+    assert report.metrics["judge_unsupported_grounding_rate"] == 0.5
+
+
 def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp_path: Path) -> None:
     test_dataset = tmp_path / "text_sft.jsonl"
     adapter_dir = tmp_path / "adapter"

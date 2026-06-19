@@ -25,7 +25,7 @@ def build_recovery_plan(state: PipelineState, result: ActionResult) -> RecoveryP
     if result.action_type == ActionType.GENERATE_TAXONOMY:
         return _taxonomy_plan(state, issues)
     if result.action_type == ActionType.COLLECT_DATA:
-        return _collection_plan(state, issues)
+        return _collection_plan(state, issues, result)
     if result.action_type == ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES:
         return _coverage_plan(state, issues, result)
     if result.action_type == ActionType.BUILD_SFT_DATASET:
@@ -56,11 +56,20 @@ def _taxonomy_plan(state: PipelineState, issues: set[str]) -> RecoveryPlan:
     )
 
 
-def _collection_plan(state: PipelineState, issues: set[str]) -> RecoveryPlan:
+def _collection_plan(state: PipelineState, issues: set[str], result: ActionResult | None = None) -> RecoveryPlan:
     delta: Dict[str, Any] = {}
+    text_filter = _text_filter_summary(result)
+    if "text_filter_removed_all_samples" in issues or _text_filter_removed_all(text_filter):
+        delta.update(_expand_text_collection_delta(state))
+        delta.update(_relax_text_filter_delta(state, text_filter))
+        return RecoveryPlan(
+            target_stage=ActionType.COLLECT_DATA,
+            reason="recovery_expand_collection_after_text_filter",
+            config_delta=delta,
+        )
+
     if issues & {"num_samples_below_minimum", "data_path_missing"}:
-        delta["serper_results_per_query"] = min(_int_cfg(state, "serper_results_per_query", 10) + 5, 30)
-        delta["serper_top_results"] = min(_int_cfg(state, "serper_top_results", 5) + 2, 12)
+        delta.update(_expand_text_collection_delta(state))
         if state.config.get("max_queries") is not None:
             delta["max_queries"] = min(_int_cfg(state, "max_queries", 10) + 10, 200)
 
@@ -102,7 +111,7 @@ def _coverage_plan(state: PipelineState, issues: set[str], result: ActionResult)
             40,
         )
     if not delta:
-        return _collection_plan(state, issues)
+        return _collection_plan(state, issues, result)
     return RecoveryPlan(
         target_stage=ActionType.COLLECT_DATA,
         reason="recovery_refine_collection_queries",
@@ -153,6 +162,25 @@ def _training_plan(state: PipelineState, issues: set[str]) -> RecoveryPlan:
 
 def _eval_plan(state: PipelineState, issues: set[str], result: ActionResult) -> RecoveryPlan:
     labels = _failure_labels(result)
+    judge = _judge_summary(result)
+    if (
+        "eval_grounding_failure" in issues
+        or _float_value(judge.get("unsupported_grounding_rate"), 0.0) > 0.2
+        or _contains_any(labels, ("grounding", "unsupported", "hallucination", "wrong_fact"))
+    ):
+        delta = _expand_text_collection_delta(state)
+        delta["coverage_min_text_samples"] = min(_int_cfg(state, "coverage_min_text_samples", 3) + 2, 25)
+        return RecoveryPlan(
+            target_stage=ActionType.COLLECT_DATA,
+            reason="recovery_eval_requests_grounded_sources",
+            config_delta=delta,
+        )
+    if "eval_failure_rate_too_high" in issues and not bool(state.config.get("eval_enable_llm_judge")):
+        return RecoveryPlan(
+            target_stage=ActionType.EVALUATE_MODEL,
+            reason="recovery_enable_llm_judge_for_eval",
+            config_delta={"eval_enable_llm_judge": True},
+        )
     if issues & {"eval_knowledge_missing", "eval_grounding_failure"} or _contains_any(
         labels,
         ("knowledge", "coverage", "missing", "grounding", "hallucination"),
@@ -199,6 +227,62 @@ def _failure_labels(result: ActionResult) -> list[str]:
     return labels
 
 
+def _expand_text_collection_delta(state: PipelineState) -> Dict[str, Any]:
+    return {
+        "serper_results_per_query": min(_int_cfg(state, "serper_results_per_query", 10) + 5, 30),
+        "serper_top_results": min(_int_cfg(state, "serper_top_results", 5) + 2, 12),
+    }
+
+
+def _relax_text_filter_delta(state: PipelineState, summary: dict[str, Any]) -> Dict[str, Any]:
+    delta: Dict[str, Any] = {
+        "text_filter_min_chars": max(120, int(_int_cfg(state, "text_filter_min_chars", 300) * 0.8)),
+        "text_filter_min_words": max(20, int(_int_cfg(state, "text_filter_min_words", 40) * 0.8)),
+    }
+    reason_counts = summary.get("removed_reason_counts") if isinstance(summary.get("removed_reason_counts"), dict) else {}
+    near_removed = int(reason_counts.get("near_duplicate_text") or 0)
+    exact_removed = int(reason_counts.get("exact_duplicate_text") or 0)
+    if near_removed > exact_removed:
+        delta["text_filter_shingle_threshold"] = min(
+            _float_cfg(state, "text_filter_shingle_threshold", 0.90) + 0.03,
+            0.98,
+        )
+    return delta
+
+
+def _text_filter_summary(result: ActionResult | None) -> dict[str, Any]:
+    if not result:
+        return {}
+    summary = result.artifacts.get("text_filter_summary") if isinstance(result.artifacts, dict) else None
+    if isinstance(summary, dict):
+        return summary
+    metadata = result.artifacts.get("collection_metadata") if isinstance(result.artifacts, dict) else None
+    if isinstance(metadata, dict) and isinstance(metadata.get("text_filter_summary"), dict):
+        return metadata["text_filter_summary"]
+    raw = result.raw_output if isinstance(result.raw_output, dict) else {}
+    raw_metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    return raw_metadata.get("text_filter_summary") if isinstance(raw_metadata.get("text_filter_summary"), dict) else {}
+
+
+def _text_filter_removed_all(summary: dict[str, Any]) -> bool:
+    return bool(summary.get("enabled")) and _int_value(summary.get("num_input"), 0) > 0 and _int_value(summary.get("num_kept"), 0) == 0
+
+
+def _judge_summary(result: ActionResult) -> dict[str, Any]:
+    for source in (result.artifacts, result.metrics, result.raw_output if isinstance(result.raw_output, dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        direct = source.get("judge_summary") or source.get("judge")
+        if isinstance(direct, dict):
+            return direct
+        metrics = source.get("metrics")
+        if isinstance(metrics, dict):
+            nested = metrics.get("judge") or metrics.get("judge_summary")
+            if isinstance(nested, dict):
+                return nested
+    return {}
+
+
 def _contains_any(values: list[str], needles: tuple[str, ...]) -> bool:
     return any(any(needle in value for needle in needles) for value in values)
 
@@ -231,5 +315,19 @@ def _int_cfg(state: PipelineState, key: str, default: int) -> int:
 def _float_cfg(state: PipelineState, key: str, default: float) -> float:
     try:
         return float(state.config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
