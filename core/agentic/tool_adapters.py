@@ -258,23 +258,27 @@ class AgenticToolAdapter:
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
             text_quality_artifacts = _write_sft_text_quality_artifacts(state, output)
+            sft_artifacts = {
+                "sft_mode": output.get("mode"),
+                "training_modality": output.get("mode"),
+                "sft_path": output.get("sft_path"),
+                "annotations_path": output.get("annotations_path"),
+                "num_sft_examples": output.get("num_examples"),
+                "sft_prompt_preset": output.get("prompt_preset"),
+                **text_quality_artifacts,
+            }
             hub_info = {}
             if report.passed:
                 hub_info = _push_hf_outputs_if_configured(
                     cfg,
                     dataset_path=output.get("sft_path"),
+                    dataset_card_readme=_build_dataset_card(state, current_artifacts=sft_artifacts),
                 )
             return ActionResult(
                 action_type=ActionType.BUILD_SFT_DATASET,
                 status=_status_from_report(report),
                 artifacts={
-                    "sft_mode": output.get("mode"),
-                    "training_modality": output.get("mode"),
-                    "sft_path": output.get("sft_path"),
-                    "annotations_path": output.get("annotations_path"),
-                    "num_sft_examples": output.get("num_examples"),
-                    "sft_prompt_preset": output.get("prompt_preset"),
-                    **text_quality_artifacts,
+                    **sft_artifacts,
                     **hub_info,
                 },
                 metrics=report.metrics,
@@ -300,6 +304,9 @@ class AgenticToolAdapter:
                 },
             )
             report = validate_dataset_output(output)
+            hub_info = {}
+            if report.passed:
+                hub_info = _update_hf_dataset_card_if_configured(state, cfg, output)
             return ActionResult(
                 action_type=ActionType.BUILD_DATASET,
                 status=_status_from_report(report),
@@ -307,10 +314,11 @@ class AgenticToolAdapter:
                     "dataset_ref": output.get("dataset_ref"),
                     "dataset_summary": output.get("dataset_summary"),
                     "dataset_manifest_path": output.get("dataset_manifest_path"),
+                    **hub_info,
                 },
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output=output,
+                raw_output={**output, **hub_info},
             )
         except Exception as exc:
             return _failed_result(ActionType.BUILD_DATASET, exc)
@@ -349,6 +357,12 @@ class AgenticToolAdapter:
                     },
                 )
             report = validate_training_output(output)
+            train_artifacts = {
+                "adapter_path": output.get("adapter_path"),
+                "train_log_paths": output.get("log_paths"),
+                "train_metrics": output.get("metrics"),
+                "iterations": [output.get("iteration_record")] if output.get("iteration_record") else [],
+            }
             hub_info = {}
             if report.passed:
                 if _as_bool(cfg.get("debug_stub_train", False)):
@@ -358,15 +372,13 @@ class AgenticToolAdapter:
                     hub_info = _push_hf_outputs_if_configured(
                         cfg,
                         adapter_path=output.get("adapter_path"),
+                        adapter_card_readme=_build_adapter_card(state, current_artifacts=train_artifacts),
                     )
             return ActionResult(
                 action_type=ActionType.TRAIN_MODEL,
                 status=_status_from_report(report),
                 artifacts={
-                    "adapter_path": output.get("adapter_path"),
-                    "train_log_paths": output.get("log_paths"),
-                    "train_metrics": output.get("metrics"),
-                    "iterations": [output.get("iteration_record")] if output.get("iteration_record") else [],
+                    **train_artifacts,
                     **hub_info,
                 },
                 metrics=report.metrics,
@@ -424,23 +436,28 @@ class AgenticToolAdapter:
                     eval_config,
                 )
             report = validate_eval_output(output)
+            eval_artifacts = {
+                "eval_attempt": eval_attempt,
+                "eval_attempt_dir": str(eval_run_dir),
+                "predictions_path": output.get("predictions_path"),
+                "failures_path": output.get("failures_path"),
+                "cluster_preview": output.get("cluster_preview"),
+                "eval_metrics_path": output.get("eval_metrics_path"),
+                "eval_metrics": output.get("metrics"),
+                "training_health": output.get("training_health"),
+                "judge_summary": output.get("judge_summary"),
+            }
+            hub_info = _update_hf_adapter_card_if_configured(state, cfg, eval_artifacts, report)
             return ActionResult(
                 action_type=ActionType.EVALUATE_MODEL,
                 status=_status_from_report(report),
                 artifacts={
-                    "eval_attempt": eval_attempt,
-                    "eval_attempt_dir": str(eval_run_dir),
-                    "predictions_path": output.get("predictions_path"),
-                    "failures_path": output.get("failures_path"),
-                    "cluster_preview": output.get("cluster_preview"),
-                    "eval_metrics_path": output.get("eval_metrics_path"),
-                    "eval_metrics": output.get("metrics"),
-                    "training_health": output.get("training_health"),
-                    "judge_summary": output.get("judge_summary"),
+                    **eval_artifacts,
+                    **hub_info,
                 },
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output=output,
+                raw_output={**output, **hub_info},
             )
         except Exception as exc:
             return _failed_result(ActionType.EVALUATE_MODEL, exc)
@@ -700,13 +717,15 @@ def _push_hf_outputs_if_configured(
     *,
     dataset_path: Any = None,
     adapter_path: Any = None,
-) -> Dict[str, str]:
+    dataset_card_readme: str | None = None,
+    adapter_card_readme: str | None = None,
+) -> Dict[str, Any]:
     token = _stripped(config.get("hf_token"))
     if token and not os.getenv("HF_TOKEN"):
         os.environ["HF_TOKEN"] = token
 
     username = _stripped(config.get("hf_username")) or None
-    pushed: Dict[str, str] = {}
+    pushed: Dict[str, Any] = {}
 
     dataset_repo = _stripped(config.get("hf_dataset_repo"))
     if dataset_path and dataset_repo:
@@ -714,7 +733,14 @@ def _push_hf_outputs_if_configured(
             from core.hf_hub import push_dataset
 
             repo_name, repo_username = _hf_repo_name_and_username(dataset_repo, username)
-            pushed["dataset_repo_id"] = push_dataset(str(dataset_path), repo_name, username=repo_username)
+            pushed["dataset_repo_id"] = push_dataset(
+                str(dataset_path),
+                repo_name,
+                username=repo_username,
+                card_readme=dataset_card_readme,
+            )
+            if dataset_card_readme:
+                pushed["hf_dataset_card_updated"] = True
             logger.info("SFT dataset pushed to HF Hub: %s", pushed["dataset_repo_id"])
         except Exception as exc:
             pushed["hf_dataset_upload_error"] = f"{type(exc).__name__}: {exc}"
@@ -726,13 +752,225 @@ def _push_hf_outputs_if_configured(
             from core.hf_hub import push_adapter
 
             repo_name, repo_username = _hf_repo_name_and_username(adapter_repo, username)
-            pushed["adapter_repo_id"] = push_adapter(str(adapter_path), repo_name, username=repo_username)
+            pushed["adapter_repo_id"] = push_adapter(
+                str(adapter_path),
+                repo_name,
+                username=repo_username,
+                card_readme=adapter_card_readme,
+            )
+            if adapter_card_readme:
+                pushed["hf_adapter_card_updated"] = True
             logger.info("LoRA adapter pushed to HF Hub: %s", pushed["adapter_repo_id"])
         except Exception as exc:
             pushed["hf_adapter_upload_error"] = f"{type(exc).__name__}: {exc}"
             logger.error("Failed to push LoRA adapter to HF Hub: %s", exc)
 
     return pushed
+
+
+def _update_hf_dataset_card_if_configured(
+    state: PipelineState,
+    config: Mapping[str, Any],
+    dataset_output: Mapping[str, Any],
+) -> Dict[str, Any]:
+    repo_id = _stripped(state.artifacts.get("dataset_repo_id"))
+    if not repo_id:
+        return {}
+    token = _stripped(config.get("hf_token"))
+    if token and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = token
+    try:
+        from core.hf_hub import update_repo_readme
+
+        readme = _build_dataset_card(
+            state,
+            dataset_summary=dataset_output.get("dataset_summary"),
+        )
+        update_repo_readme(repo_id, readme, repo_type="dataset")
+        return {"hf_dataset_card_updated": True}
+    except Exception as exc:
+        logger.error("Failed to update HF dataset card: %s", exc)
+        return {"hf_dataset_card_update_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _update_hf_adapter_card_if_configured(
+    state: PipelineState,
+    config: Mapping[str, Any],
+    eval_artifacts: Mapping[str, Any],
+    eval_report: QualityReport,
+) -> Dict[str, Any]:
+    repo_id = _stripped(state.artifacts.get("adapter_repo_id"))
+    if not repo_id:
+        return {}
+    token = _stripped(config.get("hf_token"))
+    if token and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = token
+    try:
+        from core.hf_hub import update_repo_readme
+
+        readme = _build_adapter_card(state, current_artifacts=dict(eval_artifacts), eval_report=eval_report)
+        update_repo_readme(repo_id, readme, repo_type="model")
+        return {"hf_adapter_card_updated": True}
+    except Exception as exc:
+        logger.error("Failed to update HF adapter card: %s", exc)
+        return {"hf_adapter_card_update_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _build_dataset_card(
+    state: PipelineState,
+    *,
+    current_artifacts: Mapping[str, Any] | None = None,
+    dataset_summary: Mapping[str, Any] | None = None,
+) -> str:
+    artifacts = {**state.artifacts, **dict(current_artifacts or {})}
+    collection = artifacts.get("collection_metadata") if isinstance(artifacts.get("collection_metadata"), dict) else {}
+    text_filter = artifacts.get("text_filter_summary") or collection.get("text_filter_summary") or {}
+    collection_quality = artifacts.get("collection_text_quality_summary") or {}
+    sft_quality = artifacts.get("sft_text_quality_summary") or {}
+    summary = dict(dataset_summary or artifacts.get("dataset_summary") or {})
+    lines = [
+        "---",
+        "tags:",
+        "- horde-agent",
+        "- supervised-fine-tuning",
+        "- lora-training",
+        "license: other",
+        "---",
+        "",
+        "# Horde Agent SFT Dataset",
+        "",
+        "This dataset was generated by the horde-agent full agentic workflow for supervised fine-tuning.",
+        "Source metadata columns are retained to support source-grounded validation and split leakage checks.",
+        "",
+        "## Dataset Summary",
+        _markdown_table(
+            [
+                ("Country", state.config.get("country")),
+                (
+                    "Training modality",
+                    artifacts.get("training_modality") or artifacts.get("sft_mode") or _training_modality(state.config),
+                ),
+                ("Target language", state.config.get("sft_target_language")),
+                ("SFT examples", artifacts.get("num_sft_examples")),
+                ("Split strategy", summary.get("split_strategy")),
+                ("Train rows", _nested(summary, "split_counts", "train")),
+                ("Validation rows", _nested(summary, "split_counts", "validation")),
+                ("Group key column", summary.get("group_key_column")),
+            ]
+        ),
+        "",
+        "## Source And Filtering",
+        _markdown_table(
+            [
+                ("Collected samples", artifacts.get("num_samples")),
+                ("Text filter enabled", text_filter.get("enabled")),
+                ("Text rows before filter", text_filter.get("num_input")),
+                ("Text rows kept", text_filter.get("num_kept")),
+                ("Text rows removed", text_filter.get("num_removed")),
+                ("Collection exact duplicate rate", collection_quality.get("exact_duplicate_rate")),
+                ("Collection URL duplicate rate", collection_quality.get("url_duplicate_rate")),
+                ("SFT exact duplicate rate", sft_quality.get("exact_duplicate_rate")),
+                ("SFT shingle near-duplicate pairs", sft_quality.get("shingle_pair_count")),
+            ]
+        ),
+    ]
+    if artifacts.get("image_dedup_enabled") is not None:
+        lines.extend(
+            [
+                "",
+                "## Image Deduplication",
+                _markdown_table(
+                    [
+                        ("Enabled", artifacts.get("image_dedup_enabled")),
+                        ("Method", artifacts.get("image_dedup_method")),
+                        ("Threshold", artifacts.get("image_dedup_threshold")),
+                        ("Images before dedup", artifacts.get("num_images_before_dedup")),
+                        ("Images after dedup", artifacts.get("num_images")),
+                        ("Removed images", artifacts.get("num_images_removed_by_dedup")),
+                        ("Duplicate clusters", artifacts.get("num_image_dedup_clusters")),
+                    ]
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Intended Use",
+            (
+                "Use this dataset for LoRA/SFT experiments in the same domain and modality. "
+                "Review retained source metadata before public release or downstream redistribution."
+            ),
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_adapter_card(
+    state: PipelineState,
+    *,
+    current_artifacts: Mapping[str, Any] | None = None,
+    eval_report: QualityReport | None = None,
+) -> str:
+    artifacts = {**state.artifacts, **dict(current_artifacts or {})}
+    train_metrics = artifacts.get("train_metrics") if isinstance(artifacts.get("train_metrics"), dict) else {}
+    eval_metrics = artifacts.get("eval_metrics") if isinstance(artifacts.get("eval_metrics"), dict) else {}
+    judge = artifacts.get("judge_summary") if isinstance(artifacts.get("judge_summary"), dict) else {}
+    if not judge and isinstance(eval_metrics.get("judge"), dict):
+        judge = eval_metrics["judge"]
+    training_health = artifacts.get("training_health") if isinstance(artifacts.get("training_health"), dict) else {}
+    if not training_health and isinstance(eval_metrics.get("training_health"), dict):
+        training_health = eval_metrics["training_health"]
+    lines = [
+        "---",
+        "tags:",
+        "- horde-agent",
+        "- lora",
+        "- peft",
+        "- supervised-fine-tuning",
+        "license: other",
+        "---",
+        "",
+        "# Horde Agent LoRA Adapter",
+        "",
+        "This LoRA adapter was trained by the horde-agent full agentic workflow.",
+        "",
+        "## Training Summary",
+        _markdown_table(
+            [
+                ("Base model", state.config.get("hf_model_id")),
+                ("Training modality", artifacts.get("training_modality") or _training_modality(state.config)),
+                ("Dataset repo", artifacts.get("dataset_repo_id")),
+                ("Max steps", state.config.get("max_steps")),
+                ("Learning rate", state.config.get("train_lr")),
+                ("Batch size", state.config.get("train_batch_size")),
+                ("Gradient accumulation", state.config.get("train_grad_accum")),
+                ("Last train loss", train_metrics.get("last_train_loss")),
+                ("Best eval loss", train_metrics.get("best_eval_loss")),
+            ]
+        ),
+        "",
+        "## Evaluation Summary",
+        _markdown_table(
+            [
+                ("Gate", eval_report.gate_status if eval_report else None),
+                ("Failure rate", eval_metrics.get("failure_rate")),
+                ("Predictions", eval_metrics.get("num_predictions")),
+                ("Training health gate", training_health.get("gate_status")),
+                ("Judge enabled", judge.get("enabled")),
+                ("Judge gate", judge.get("gate_status")),
+                ("Judge quality score", judge.get("quality_score")),
+                ("Judge major failure rate", judge.get("major_failure_rate")),
+                ("Unsupported grounding rate", judge.get("unsupported_grounding_rate")),
+            ]
+        ),
+        "",
+        "## Intended Use",
+        (
+            "Load this repository as a PEFT/LoRA adapter on top of the base model listed above. "
+            "Check the evaluation summary before using it outside the training domain."
+        ),
+    ]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _hf_repo_name_and_username(repo_value: str, username: str | None) -> tuple[str, str | None]:
@@ -744,6 +982,40 @@ def _hf_repo_name_and_username(repo_value: str, username: str | None) -> tuple[s
 
 def _stripped(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _markdown_table(rows: Iterable[tuple[str, Any]]) -> str:
+    table = ["| Field | Value |", "| --- | --- |"]
+    for label, value in rows:
+        if value in (None, "", [], {}):
+            continue
+        table.append(f"| {_escape_md(label)} | {_escape_md(_format_md_value(value))} |")
+    if len(table) == 2:
+        table.append("| None | Not available |")
+    return "\n".join(table)
+
+
+def _format_md_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _escape_md(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _nested(mapping: Mapping[str, Any], key: str, nested_key: str) -> Any:
+    value = mapping.get(key)
+    if isinstance(value, Mapping):
+        return value.get(nested_key)
+    return None
 
 
 def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
@@ -759,6 +1031,8 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "num_samples": state.artifacts.get("num_samples"),
             "collected_at": metadata.get("collected_at"),
             "raw_result_path": metadata.get("raw_result_path"),
+            "text_filter_path": state.artifacts.get("text_filter_report_path"),
+            "text_filter": state.artifacts.get("text_filter_summary"),
             "text_quality_path": state.artifacts.get("collection_text_quality_path"),
             "text_quality": state.artifacts.get("collection_text_quality_summary"),
             "image_dedup": {
@@ -783,12 +1057,16 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "text_quality_path": state.artifacts.get("sft_text_quality_path"),
             "text_quality": state.artifacts.get("sft_text_quality_summary"),
             "dataset_repo_id": state.artifacts.get("dataset_repo_id"),
+            "hf_dataset_card_updated": state.artifacts.get("hf_dataset_card_updated"),
             "hf_dataset_upload_error": state.artifacts.get("hf_dataset_upload_error"),
+            "hf_dataset_card_update_error": state.artifacts.get("hf_dataset_card_update_error"),
         },
         "training_summary": {
             "adapter_path": state.artifacts.get("adapter_path"),
             "adapter_repo_id": state.artifacts.get("adapter_repo_id"),
+            "hf_adapter_card_updated": state.artifacts.get("hf_adapter_card_updated"),
             "hf_adapter_upload_error": state.artifacts.get("hf_adapter_upload_error"),
+            "hf_adapter_card_update_error": state.artifacts.get("hf_adapter_card_update_error"),
             "hf_adapter_upload_skipped": state.artifacts.get("hf_adapter_upload_skipped"),
         },
         "eval_summary": {
@@ -798,6 +1076,8 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "num_predictions": eval_metrics.get("num_predictions") if isinstance(eval_metrics, dict) else None,
             "predictions_path": state.artifacts.get("predictions_path"),
             "failures_path": state.artifacts.get("failures_path"),
+            "judge": state.artifacts.get("judge_summary"),
+            "training_health": state.artifacts.get("training_health"),
         },
     }
 

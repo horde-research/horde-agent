@@ -181,11 +181,12 @@ The judge reuses the configured `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` p
 ```json
 {
   "verdict": "pass|minor_issue|major_failure",
+  "grounding": "supported|unsupported|insufficient_source",
   "categories": ["wrong_fact|missing_key_point|hallucination|irrelevant|format|language|unsafe|other"]
 }
 ```
 
-When judge is enabled, deterministic string-similarity failures are kept as diagnostics, but the judge gate is the primary quality signal.
+When judge is enabled, deterministic string-similarity failures are kept as diagnostics, but the judge gate is the primary quality signal. If source metadata is available, the judge checks whether predictions are supported by retained source excerpts.
 
 ## Hugging Face Uploads
 
@@ -199,7 +200,28 @@ HF_ADAPTER_REPO=horde-agent-kazakhstan-lora
 
 `HF_USERNAME` is optional. If it is omitted, the Hub username is resolved from `HF_TOKEN`. If a repo value already includes an owner, for example `my-org/horde-agent-kazakhstan-lora`, that owner is used.
 
-Adapter upload happens only after real `train_model` succeeds. `debug_stub_train` skips adapter upload to avoid publishing dummy adapters. Dataset upload happens after `build_sft_dataset` succeeds. Upload repo ids or upload errors are recorded in agent artifacts and the final report.
+Adapter upload happens only after real `train_model` succeeds. `debug_stub_train` skips adapter upload to avoid publishing dummy adapters. Dataset upload happens after `build_sft_dataset` succeeds.
+
+The upload path writes Hub `README.md` cards:
+
+- Dataset cards describe modality, source/filtering quality, duplicate diagnostics, and train/validation split metadata once `build_dataset` succeeds.
+- Adapter cards describe the base model, training settings/metrics, and are updated after `evaluate_model` with failure rate, train-health, judge quality, and unsupported-grounding metrics.
+
+Upload repo ids, card update status, or upload errors are recorded in agent artifacts and the final report.
+
+## Text Filtering
+
+Collection applies conservative text filtering before SFT annotation. It drops empty/short pages, highly repetitive text, duplicate URLs, exact duplicate text, and cheap shingle near-duplicates. Defaults can be tuned from `.env`:
+
+```bash
+TEXT_FILTER_ENABLE=true
+TEXT_FILTER_MIN_CHARS=300
+TEXT_FILTER_MIN_WORDS=40
+TEXT_FILTER_MIN_UNIQUE_WORD_RATIO=0.15
+TEXT_FILTER_SHINGLE_THRESHOLD=0.90
+```
+
+The filter writes `collect/text_filter_report.json`. If every real page is filtered out, the recovery policy expands collection and relaxes length thresholds instead of silently training on the placeholder row.
 
 ## Text Quality Diagnostics
 
@@ -239,7 +261,7 @@ Local artifacts are written under `RUN_DIR`:
 - `artifact_manifest.json`: active local artifact paths, owning stage, existence, size, attempt, and iteration metadata.
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.
-- `collect/`: raw collection output, metadata, collection text-quality diagnostics, and optional image dedup reports.
+- `collect/`: raw collection output, text filter report, metadata, collection text-quality diagnostics, and optional image dedup reports.
 - `sft/`: annotations, SFT JSONL, and SFT text-quality diagnostics.
 - `dataset/`: Hugging Face train/validation dataset.
 - `eval/attempt_N/`: validation outputs, deterministic diagnostics, clustered failures, and judge artifacts for each evaluation attempt.
@@ -268,6 +290,7 @@ PYENV_VERSION=agents pyenv exec python -m pytest \
   tests/test_eval_quality.py \
   tests/test_image_training.py \
   tests/test_text_quality.py \
+  tests/test_text_filter.py \
   tests/test_image_dedup.py
 ```
 

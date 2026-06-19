@@ -58,12 +58,16 @@ _STAGE_ARTIFACT_KEYS: dict[str, set[str]] = {
         "sft_text_quality_path",
         "sft_text_quality_summary",
         "dataset_repo_id",
+        "hf_dataset_card_updated",
         "hf_dataset_upload_error",
+        "hf_dataset_card_update_error",
     },
     ActionType.BUILD_DATASET.value: {
         "dataset_ref",
         "dataset_summary",
         "dataset_manifest_path",
+        "hf_dataset_card_updated",
+        "hf_dataset_card_update_error",
     },
     ActionType.TRAIN_MODEL.value: {
         "adapter_path",
@@ -71,7 +75,9 @@ _STAGE_ARTIFACT_KEYS: dict[str, set[str]] = {
         "train_metrics",
         "iterations",
         "adapter_repo_id",
+        "hf_adapter_card_updated",
         "hf_adapter_upload_error",
+        "hf_adapter_card_update_error",
         "hf_adapter_upload_skipped",
     },
     ActionType.EVALUATE_MODEL.value: {
@@ -84,6 +90,8 @@ _STAGE_ARTIFACT_KEYS: dict[str, set[str]] = {
         "eval_metrics",
         "training_health",
         "judge_summary",
+        "hf_adapter_card_updated",
+        "hf_adapter_card_update_error",
     },
     ActionType.GENERATE_REPORT.value: {"report_path"},
 }

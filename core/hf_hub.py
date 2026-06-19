@@ -10,6 +10,7 @@ Authentication: reads HF_TOKEN from the environment. No need for
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 from pathlib import Path
@@ -40,6 +41,7 @@ def push_dataset(
     *,
     private: bool = True,
     username: Optional[str] = None,
+    card_readme: Optional[str] = None,
 ) -> str:
     """Push a local JSONL or save_to_disk dataset to HF Hub.
 
@@ -65,6 +67,8 @@ def push_dataset(
 
     logger.info("Pushing dataset (%d rows) → %s (private=%s)", len(ds), repo_id, private)
     ds.push_to_hub(repo_id, private=private, token=_hf_token())
+    if card_readme:
+        update_repo_readme(repo_id, card_readme, repo_type="dataset")
     logger.info("Dataset pushed: https://huggingface.co/datasets/%s", repo_id)
     return repo_id
 
@@ -87,6 +91,7 @@ def push_adapter(
     *,
     private: bool = True,
     username: Optional[str] = None,
+    card_readme: Optional[str] = None,
 ) -> str:
     """Push a LoRA adapter directory to HF Hub.
 
@@ -102,8 +107,23 @@ def push_adapter(
 
     logger.info("Pushing adapter %s → %s", adapter_dir, repo_id)
     api.upload_folder(folder_path=adapter_dir, repo_id=repo_id, repo_type="model")
+    if card_readme:
+        update_repo_readme(repo_id, card_readme, repo_type="model")
     logger.info("Adapter pushed: https://huggingface.co/%s", repo_id)
     return repo_id
+
+
+def update_repo_readme(repo_id: str, readme: str, *, repo_type: str) -> None:
+    """Upload ``README.md`` content to an existing Hub repository."""
+    from huggingface_hub import HfApi
+
+    api = HfApi(token=_hf_token())
+    api.upload_file(
+        path_or_fileobj=io.BytesIO(readme.encode("utf-8")),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type=repo_type,
+    )
 
 
 def pull_adapter(

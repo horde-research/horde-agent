@@ -115,6 +115,7 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Collected at: {collection['collected_at']}")
         if collection.get("raw_result_path"):
             lines.append(f"- Raw result path: `{collection['raw_result_path']}`")
+        lines.extend(_format_text_filter(collection.get("text_filter"), path=collection.get("text_filter_path")))
         lines.extend(_format_text_quality(collection.get("text_quality"), path=collection.get("text_quality_path")))
         lines.extend(_format_image_dedup(collection.get("image_dedup")))
         lines.append("")
@@ -129,8 +130,12 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
         lines.extend(_format_text_quality(sft.get("text_quality"), path=sft.get("text_quality_path")))
         if sft.get("dataset_repo_id"):
             lines.append(f"- HF dataset repo: `{sft['dataset_repo_id']}`")
+        if sft.get("hf_dataset_card_updated"):
+            lines.append("- HF dataset card updated: yes")
         if sft.get("hf_dataset_upload_error"):
             lines.append(f"- HF dataset upload error: `{sft['hf_dataset_upload_error']}`")
+        if sft.get("hf_dataset_card_update_error"):
+            lines.append(f"- HF dataset card update error: `{sft['hf_dataset_card_update_error']}`")
         lines.append("")
 
     training = summary.get("training_summary") or {}
@@ -140,10 +145,14 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Adapter path: `{training['adapter_path']}`")
         if training.get("adapter_repo_id"):
             lines.append(f"- HF adapter repo: `{training['adapter_repo_id']}`")
+        if training.get("hf_adapter_card_updated"):
+            lines.append("- HF adapter card updated: yes")
         if training.get("hf_adapter_upload_skipped"):
             lines.append(f"- HF adapter upload skipped: `{training['hf_adapter_upload_skipped']}`")
         if training.get("hf_adapter_upload_error"):
             lines.append(f"- HF adapter upload error: `{training['hf_adapter_upload_error']}`")
+        if training.get("hf_adapter_card_update_error"):
+            lines.append(f"- HF adapter card update error: `{training['hf_adapter_card_update_error']}`")
         lines.append("")
 
     eval_summary = summary.get("eval_summary") or {}
@@ -161,10 +170,41 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Predictions path: `{eval_summary['predictions_path']}`")
         if eval_summary.get("failures_path"):
             lines.append(f"- Failures path: `{eval_summary['failures_path']}`")
+        judge = eval_summary.get("judge") if isinstance(eval_summary.get("judge"), dict) else {}
+        if judge:
+            lines.append(f"- Judge gate: {judge.get('gate_status') or 'unknown'}")
+            if judge.get("quality_score") is not None:
+                lines.append(f"- Judge quality score: {judge['quality_score']}")
+            if judge.get("unsupported_grounding_rate") is not None:
+                lines.append(f"- Unsupported grounding rate: {judge['unsupported_grounding_rate']}")
+        training_health = (
+            eval_summary.get("training_health") if isinstance(eval_summary.get("training_health"), dict) else {}
+        )
+        if training_health.get("gate_status"):
+            lines.append(f"- Training health gate: {training_health['gate_status']}")
         lines.append("")
 
     if not lines:
         lines.append("No pipeline summary was provided.\n")
+    return lines
+
+
+def _format_text_filter(summary: Any, *, path: Any = None) -> List[str]:
+    if not isinstance(summary, dict) and not path:
+        return []
+    lines: List[str] = []
+    if isinstance(summary, dict):
+        if summary.get("enabled") is not None:
+            lines.append(f"- Text filter enabled: {summary['enabled']}")
+        if summary.get("num_removed") is not None:
+            lines.append(
+                "- Text filter removed: "
+                f"{summary.get('num_removed', 0)}/{summary.get('num_input', 0)} rows"
+            )
+        if summary.get("removed_reason_counts"):
+            lines.append(f"- Text filter removal reasons: `{summary['removed_reason_counts']}`")
+    if path:
+        lines.append(f"- Text filter report: `{path}`")
     return lines
 
 
