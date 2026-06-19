@@ -5,6 +5,7 @@ python-dotenv>=1.0.0
 pytest
 # GPU
 torch>=2.0.0
+torchvision>=0.17.0
 transformers>=4.30.0
 datasets>=2.14.0
 accelerate>=0.20.0
