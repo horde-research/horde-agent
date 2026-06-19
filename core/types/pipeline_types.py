@@ -16,6 +16,9 @@ class DatasetSummary(BaseModel):
     columns: List[str]
     sample_count: int
     split_counts: Dict[str, int] = Field(default_factory=dict)
+    split_strategy: str = "row"
+    group_key_column: Optional[str] = None
+    split_group_counts: Dict[str, int] = Field(default_factory=dict)
     example: Dict[str, Any]
     modality_candidates: List[str]
     validation_warnings: List[str]

@@ -4,6 +4,7 @@ Prepares training-ready datasets from raw data.
 """
 
 import shutil
+import random
 from pathlib import Path
 from typing import Any
 
@@ -70,12 +71,14 @@ class BuildDatasetTool(BaseTool):
         example = build_example_preview(dataset[0]) if len(dataset) > 0 else {}
         text_columns = [c for c in columns if c in {"messages", "text", "prompt", "response", "instruction", "output"}]
         warnings = validate_text_columns(dataset, text_columns)
-        split_dataset, split_warnings = _build_train_validation_splits(
+        group_key_column = str(config.get("group_key_column") or "group_key")
+        split_dataset, split_warnings, split_metadata = _build_train_validation_splits(
             dataset,
             train_split=train_split,
             validation_split=validation_split,
             validation_ratio=validation_ratio,
             seed=seed,
+            group_key_column=group_key_column,
         )
         warnings.extend(split_warnings)
         dataset_dir = Path(run_dir) / "dataset"
@@ -90,6 +93,9 @@ class BuildDatasetTool(BaseTool):
             columns=columns,
             sample_count=len(dataset),
             split_counts=split_counts,
+            split_strategy=split_metadata["split_strategy"],
+            group_key_column=split_metadata.get("group_key_column"),
+            split_group_counts=split_metadata["split_group_counts"],
             example=example,
             modality_candidates=modality_candidates,
             validation_warnings=warnings,
@@ -106,6 +112,9 @@ class BuildDatasetTool(BaseTool):
                 "source_data_path": str(data_path),
                 "source_split": source_split,
                 "split_counts": split_counts,
+                "split_strategy": split_metadata["split_strategy"],
+                "group_key_column": split_metadata.get("group_key_column"),
+                "split_group_counts": split_metadata["split_group_counts"],
             },
             "dataset_summary": summary.model_dump(),
             "dataset_manifest_path": manifest_path,
@@ -127,19 +136,106 @@ def _build_train_validation_splits(
     validation_split: str,
     validation_ratio: float,
     seed: int,
-) -> tuple[DatasetDict, list[str]]:
+    group_key_column: str = "group_key",
+) -> tuple[DatasetDict, list[str], dict[str, Any]]:
     warnings: list[str] = []
     total = len(dataset)
+    row_split_metadata = {
+        "split_strategy": "row",
+        "group_key_column": None,
+        "split_group_counts": {},
+    }
     if total <= 0:
-        return DatasetDict({train_split: dataset, validation_split: dataset}), ["dataset_empty"]
+        return DatasetDict({train_split: dataset, validation_split: dataset}), ["dataset_empty"], row_split_metadata
     if total == 1 or validation_ratio <= 0.0:
         if total == 1:
             warnings.append("validation_reuses_train_single_sample")
         else:
             warnings.append("validation_disabled_reuses_train")
-        return DatasetDict({train_split: dataset, validation_split: dataset}), warnings
+        return DatasetDict({train_split: dataset, validation_split: dataset}), warnings, row_split_metadata
+
+    group_values = _group_values(dataset, group_key_column)
+    if group_values:
+        group_split = _build_group_train_validation_splits(
+            dataset,
+            group_values=group_values,
+            train_split=train_split,
+            validation_split=validation_split,
+            validation_ratio=validation_ratio,
+            seed=seed,
+            group_key_column=group_key_column,
+        )
+        if group_split is not None:
+            return group_split
 
     val_count = max(1, int(round(total * validation_ratio)))
     val_count = min(val_count, total - 1)
     split = dataset.train_test_split(test_size=val_count, seed=seed, shuffle=True)
-    return DatasetDict({train_split: split["train"], validation_split: split["test"]}), warnings
+    return DatasetDict({train_split: split["train"], validation_split: split["test"]}), warnings, row_split_metadata
+
+
+def _group_values(dataset: Dataset, group_key_column: str) -> list[str] | None:
+    if group_key_column not in set(getattr(dataset, "column_names", []) or []):
+        return None
+    values: list[str] = []
+    for value in dataset[group_key_column]:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        values.append(normalized)
+    return values
+
+
+def _build_group_train_validation_splits(
+    dataset: Dataset,
+    *,
+    group_values: list[str],
+    train_split: str,
+    validation_split: str,
+    validation_ratio: float,
+    seed: int,
+    group_key_column: str,
+) -> tuple[DatasetDict, list[str], dict[str, Any]] | None:
+    groups = sorted(set(group_values))
+    if len(groups) <= 1:
+        return None
+
+    shuffled_groups = list(groups)
+    random.Random(seed).shuffle(shuffled_groups)
+    val_group_count = max(1, int(round(len(groups) * validation_ratio)))
+    val_group_count = min(val_group_count, len(groups) - 1)
+    validation_groups = set(shuffled_groups[:val_group_count])
+    train_indices: list[int] = []
+    validation_indices: list[int] = []
+    train_groups: set[str] = set()
+    actual_validation_groups: set[str] = set()
+
+    for idx, group_key in enumerate(group_values):
+        if group_key in validation_groups:
+            validation_indices.append(idx)
+            actual_validation_groups.add(group_key)
+        else:
+            train_indices.append(idx)
+            train_groups.add(group_key)
+
+    if not train_indices or not validation_indices:
+        return None
+
+    metadata = {
+        "split_strategy": "group",
+        "group_key_column": group_key_column,
+        "split_group_counts": {
+            train_split: len(train_groups),
+            validation_split: len(actual_validation_groups),
+        },
+    }
+    return (
+        DatasetDict(
+            {
+                train_split: dataset.select(train_indices),
+                validation_split: dataset.select(validation_indices),
+            }
+        ),
+        [],
+        metadata,
+    )

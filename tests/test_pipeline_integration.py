@@ -556,6 +556,38 @@ class TestBuildDatasetTool:
         result = BuildDatasetTool().execute(jsonl_path, {"run_dir": run_dir})
         assert "text" in result["dataset_summary"]["modality_candidates"]
 
+    def test_group_key_split_prevents_source_leakage(self, run_dir):
+        from core.data.hf_dataset import load_dataset_from_path
+        from tools.build_dataset.tool import BuildDatasetTool
+
+        jsonl_path = os.path.join(run_dir, "grouped_sft.jsonl")
+        with open(jsonl_path, "w") as f:
+            for group_idx in range(4):
+                for row_idx in range(2):
+                    f.write(json.dumps({
+                        "group_key": f"source-{group_idx}",
+                        "messages": [
+                            {"role": "user", "content": f"Question {group_idx}-{row_idx}"},
+                            {"role": "assistant", "content": f"Answer {group_idx}-{row_idx}"},
+                        ]
+                    }, ensure_ascii=False) + "\n")
+
+        result = BuildDatasetTool().execute(
+            jsonl_path,
+            {"run_dir": run_dir, "validation_ratio": 0.25, "seed": 7},
+        )
+
+        assert result["dataset_ref"]["split_strategy"] == "group"
+        assert result["dataset_ref"]["group_key_column"] == "group_key"
+        assert result["dataset_summary"]["split_group_counts"] == {"train": 3, "validation": 1}
+        train_ds, _ = load_dataset_from_path(result["dataset_ref"]["data_path"], split="train")
+        val_ds, _ = load_dataset_from_path(result["dataset_ref"]["data_path"], split="validation")
+        train_groups = set(train_ds["group_key"])
+        val_groups = set(val_ds["group_key"])
+        assert train_groups.isdisjoint(val_groups)
+        assert len(train_ds) == 6
+        assert len(val_ds) == 2
+
 
 # ─── End-to-end: Full pipeline (country → taxonomy → collect → sft → … ) ────
 
