@@ -271,11 +271,13 @@ Useful flags:
 
 If you change data collection or taxonomy settings, prefer a new `RUN_DIR` or restart from the affected upstream stage.
 
+Recovery is bounded by retry count and by failure signatures. If a failed stage would repeat the same recovery reason, config delta, blocking issues, and key metrics, the controller stops with `recovery_stalled_same_failure_signature` instead of spending another retry on an unchanged loop. Explicit restart/rebuild paths clear old recovery signatures.
+
 ## Outputs and Traces
 
 Local artifacts are written under `RUN_DIR`:
 
-- `agent_state.json`: latest serialized pipeline state with credential-like values redacted.
+- `agent_state.json`: latest serialized pipeline state with credential-like values redacted, including recorded recovery fingerprints.
 - `artifact_manifest.json`: active local artifact paths, owning stage, existence, size, attempt, and iteration metadata.
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.

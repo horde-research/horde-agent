@@ -300,6 +300,7 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
         },
         blockers=["resume_confirmation_required:generate_taxonomy"],
         termination_reason="resume_confirmation_required",
+        recovery_fingerprints=[{"reason": "stale_recovery"}],
     )
     PipelineStateStore(tmp_path).save(stale_state)
 
@@ -388,4 +389,5 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
     assert collect_config["queries"] == ["new q1", "new q2"]
     assert result["config"]["max_queries"] == 2
     assert not result["blockers"]
+    assert result["recovery_fingerprints"] == []
     assert Path(result["artifacts"]["report_path"]).exists()

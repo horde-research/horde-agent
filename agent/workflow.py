@@ -129,6 +129,7 @@ class WorkflowRunner:
                 state.decision_history.clear()
                 state.result_history.clear()
                 state.retry_counts.clear()
+                state.recovery_fingerprints.clear()
             final_state = runtime.run(state)
         else:
             final_state = runtime.run(state)

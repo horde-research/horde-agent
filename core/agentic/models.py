@@ -203,6 +203,7 @@ class ActionRequest:
     reason: str = ""
     config_delta: Dict[str, Any] = field(default_factory=dict)
     retry_attempt: int = 0
+    recovery_fingerprint: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.action_type = coerce_action_type(self.action_type)
@@ -218,6 +219,7 @@ class ActionRequest:
             "reason": self.reason,
             "config_delta": _as_plain(self.config_delta),
             "retry_attempt": self.retry_attempt,
+            "recovery_fingerprint": _as_plain(self.recovery_fingerprint),
         }
 
     @classmethod
@@ -228,6 +230,7 @@ class ActionRequest:
             reason=payload.get("reason", ""),
             config_delta=dict(payload.get("config_delta") or {}),
             retry_attempt=int(payload.get("retry_attempt") or 0),
+            recovery_fingerprint=dict(payload.get("recovery_fingerprint") or {}),
         )
 
 
@@ -290,6 +293,7 @@ class PipelineState:
     retry_counts: Dict[str, int] = field(default_factory=dict)
     config_history: List[Dict[str, Any]] = field(default_factory=list)
     decision_history: List[Dict[str, Any]] = field(default_factory=list)
+    recovery_fingerprints: List[Dict[str, Any]] = field(default_factory=list)
     result_history: List[Dict[str, Any]] = field(default_factory=list)
     blockers: List[str] = field(default_factory=list)
     resume_confirmations: Dict[str, bool] = field(default_factory=dict)
@@ -330,6 +334,10 @@ class PipelineState:
             }
         )
 
+    def record_recovery_fingerprint(self, fingerprint: Dict[str, Any]) -> None:
+        if fingerprint:
+            self.recovery_fingerprints.append(_as_plain(fingerprint))
+
     def clear_stage_and_downstream(self, stage: ActionType | str) -> None:
         stage_type = coerce_action_type(stage)
         ordered = [action.value for action in FULL_GRAPH_ACTIONS]
@@ -368,6 +376,7 @@ class PipelineState:
             "retry_counts": dict(self.retry_counts),
             "config_history": _as_plain(self.config_history),
             "decision_history": _as_plain(self.decision_history),
+            "recovery_fingerprints": _as_plain(self.recovery_fingerprints),
             "result_history": _as_plain(self.result_history),
             "blockers": list(self.blockers),
             "resume_confirmations": dict(self.resume_confirmations),
@@ -394,6 +403,7 @@ class PipelineState:
             retry_counts=dict(payload.get("retry_counts") or {}),
             config_history=list(payload.get("config_history") or []),
             decision_history=list(payload.get("decision_history") or []),
+            recovery_fingerprints=list(payload.get("recovery_fingerprints") or []),
             result_history=list(payload.get("result_history") or []),
             blockers=list(payload.get("blockers") or []),
             resume_confirmations=dict(payload.get("resume_confirmations") or {}),

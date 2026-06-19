@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
 from core.agentic.models import ActionRequest, PipelineState
-from core.agentic.recovery import build_recovery_plan
+from core.agentic.recovery import build_recovery_fingerprint, build_recovery_plan, recovery_fingerprint_seen
 
 
 def _first_incomplete_stage(state: PipelineState) -> ActionType | None:
@@ -51,12 +51,21 @@ def choose_next_action(state: PipelineState) -> ActionRequest:
                 stage=stage,
                 reason="retry_limit_exhausted",
             )
+        fingerprint = build_recovery_fingerprint(last_result, plan)
+        if recovery_fingerprint_seen(state, fingerprint):
+            return ActionRequest(
+                action_type=ActionType.STOP_FAILURE,
+                stage=stage,
+                reason="recovery_stalled_same_failure_signature",
+                recovery_fingerprint=fingerprint,
+            )
         return ActionRequest(
             action_type=stage,
             stage=stage,
             reason=plan.reason,
             config_delta=plan.config_delta,
             retry_attempt=current_retries + 1,
+            recovery_fingerprint=fingerprint,
         )
 
     if len(state.decision_history) >= state.max_graph_steps:

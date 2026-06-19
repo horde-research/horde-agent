@@ -57,3 +57,4 @@ def apply_resume_confirmations(
 
 def _clear_stage_and_downstream(state: PipelineState, stage: str) -> None:
     state.clear_stage_and_downstream(stage)
+    state.recovery_fingerprints.clear()

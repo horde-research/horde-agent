@@ -18,6 +18,26 @@ class RecoveryPlan:
     config_delta: Dict[str, Any] = field(default_factory=dict)
 
 
+def build_recovery_fingerprint(result: ActionResult, plan: RecoveryPlan) -> Dict[str, Any]:
+    report = result.quality_report
+    return _normalize_value(
+        {
+            "failed_stage": result.action_type.value,
+            "target_stage": plan.target_stage.value,
+            "reason": plan.reason,
+            "config_delta": plan.config_delta,
+            "blocking_issues": sorted(report.blocking_issues if report else []),
+            "issue_categories": sorted(report.issue_categories if report else []),
+            "key_metrics": _recovery_key_metrics(result),
+        }
+    )
+
+
+def recovery_fingerprint_seen(state: PipelineState, fingerprint: Dict[str, Any]) -> bool:
+    normalized = _normalize_value(fingerprint)
+    return any(_normalize_value(existing) == normalized for existing in state.recovery_fingerprints)
+
+
 def build_recovery_plan(state: PipelineState, result: ActionResult) -> RecoveryPlan:
     report = result.quality_report
     issues = set(report.blocking_issues if report else [])
@@ -281,6 +301,51 @@ def _judge_summary(result: ActionResult) -> dict[str, Any]:
             if isinstance(nested, dict):
                 return nested
     return {}
+
+
+def _recovery_key_metrics(result: ActionResult) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    for source in (result.metrics, result.artifacts, result.raw_output if isinstance(result.raw_output, dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        _copy_metric(metrics, source, "failure_rate")
+        _copy_metric(metrics, source, "judge_unsupported_grounding_rate")
+        _copy_metric(metrics, source, "judge_major_failure_rate")
+        _copy_metric(metrics, source, "training_health_gate")
+        _copy_metric(metrics, source, "num_samples")
+        _copy_metric(metrics, source, "text_filter_kept")
+        _copy_metric(metrics, source, "text_filter_removed")
+        _copy_metric(metrics, source, "text_filter_removal_rate")
+        judge = source.get("judge_summary") or source.get("judge")
+        if isinstance(judge, dict):
+            _copy_metric(metrics, judge, "quality_score", target_key="judge_quality_score")
+            _copy_metric(metrics, judge, "major_failure_rate", target_key="judge_major_failure_rate")
+            _copy_metric(metrics, judge, "unsupported_grounding_rate", target_key="judge_unsupported_grounding_rate")
+        text_filter = source.get("text_filter_summary")
+        if isinstance(text_filter, dict):
+            _copy_metric(metrics, text_filter, "num_kept", target_key="text_filter_kept")
+            _copy_metric(metrics, text_filter, "num_removed", target_key="text_filter_removed")
+            _copy_metric(metrics, text_filter, "removal_rate", target_key="text_filter_removal_rate")
+    return _normalize_value(metrics)
+
+
+def _copy_metric(metrics: Dict[str, Any], source: Dict[str, Any], key: str, *, target_key: str | None = None) -> None:
+    if source.get(key) is not None:
+        metrics[target_key or key] = source[key]
+
+
+def _normalize_value(value: Any) -> Any:
+    if isinstance(value, ActionType):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _normalize_value(value[key]) for key in sorted(value, key=lambda item: str(item))}
+    if isinstance(value, list):
+        return [_normalize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_value(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 6)
+    return value
 
 
 def _contains_any(values: list[str], needles: tuple[str, ...]) -> bool:

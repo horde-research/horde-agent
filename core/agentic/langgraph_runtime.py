@@ -186,6 +186,7 @@ class LangGraphAgentRuntime:
                 _compact_json(request.config_delta),
             )
             state.clear_stage_and_downstream(request.action_type)
+            state.record_recovery_fingerprint(request.recovery_fingerprint)
             state.apply_config_delta(request.config_delta, reason=request.reason)
             state.retry_counts[request.action_type.value] = request.retry_attempt
         elif request.config_delta:

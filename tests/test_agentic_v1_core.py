@@ -278,6 +278,7 @@ def test_policy_expands_collection_and_relaxes_filter_when_all_text_removed(tmp_
     assert action.config_delta["serper_results_per_query"] == 15
     assert action.config_delta["text_filter_min_chars"] == 240
     assert action.config_delta["text_filter_min_words"] == 32
+    assert action.recovery_fingerprint["reason"] == "recovery_expand_collection_after_text_filter"
 
 
 def test_policy_enables_judge_for_heuristic_eval_failure(tmp_path: Path) -> None:
@@ -300,6 +301,47 @@ def test_policy_enables_judge_for_heuristic_eval_failure(tmp_path: Path) -> None
     assert action.action_type == ActionType.EVALUATE_MODEL
     assert action.reason == "recovery_enable_llm_judge_for_eval"
     assert action.config_delta == {"eval_enable_llm_judge": True}
+
+
+def test_policy_stops_when_recovery_signature_repeats(tmp_path: Path) -> None:
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "serper_results_per_query": 30,
+            "serper_top_results": 12,
+            "text_filter_min_chars": 150,
+            "text_filter_min_words": 20,
+        },
+        max_stage_retries=3,
+    )
+    state.last_action_result = ActionResult(
+        action_type=ActionType.COLLECT_DATA,
+        status="failed",
+        artifacts={
+            "text_filter_summary": {
+                "enabled": True,
+                "num_input": 5,
+                "num_kept": 0,
+                "num_removed": 5,
+                "removal_rate": 1.0,
+            }
+        },
+        quality_report=QualityReport(
+            stage=ActionType.COLLECT_DATA,
+            passed=False,
+            recoverable=True,
+            blocking_issues=["text_filter_removed_all_samples"],
+            metrics={"text_filter_kept": 0, "text_filter_removed": 5},
+        ),
+    )
+    first = choose_next_action(state)
+    state.record_recovery_fingerprint(first.recovery_fingerprint)
+
+    second = choose_next_action(state)
+
+    assert second.action_type == ActionType.STOP_FAILURE
+    assert second.reason == "recovery_stalled_same_failure_signature"
+    assert second.recovery_fingerprint == first.recovery_fingerprint
 
 
 def test_policy_stops_after_retry_limit(tmp_path: Path) -> None:
@@ -465,3 +507,4 @@ def test_controller_applies_recovery_config_delta_before_execution(tmp_path: Pat
     assert observed_config["serper_results_per_query"] == 15
     assert observed_config["serper_top_results"] == 7
     assert final_state.config_history[0]["reason"] == "recovery_expand_collection_coverage"
+    assert final_state.recovery_fingerprints[0]["reason"] == "recovery_expand_collection_coverage"
