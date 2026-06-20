@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,23 @@ class ExplodingTool:
         raise AssertionError("real train/eval tool should not run in debug stub mode")
 
 
+def _image_sft_jsonl(image_path: Path) -> str:
+    return json.dumps(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": str(image_path)},
+                        {"type": "text", "text": "What is shown?"},
+                    ],
+                },
+                {"role": "assistant", "content": "A"},
+            ]
+        }
+    ) + "\n"
+
+
 def test_restart_cleanup_removes_stale_sft_registry_and_cache(tmp_path: Path) -> None:
     collect_dir = tmp_path / "collect"
     sft_dir = tmp_path / "sft"
@@ -94,12 +112,17 @@ def test_full_agentic_workflow_runs_known_graph_with_image_collection(tmp_path: 
     predictions_path = tmp_path / "predictions.jsonl"
     failures_path = tmp_path / "failures.jsonl"
     report_path = tmp_path / "report.html"
+    image_path = images_dir / "food.jpg"
 
     for path in (dataset_dir, images_dir, adapter_dir):
         path.mkdir(parents=True)
     for path in (images_index, sft_path, annotations_path, manifest_path, predictions_path, failures_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}\n", encoding="utf-8")
+    image_path.write_bytes(b"image")
+    images_index.write_text(json.dumps([{"file_path": str(image_path), "img_url": "https://example.com/food.jpg"}]), encoding="utf-8")
+    sft_path.write_text(_image_sft_jsonl(image_path), encoding="utf-8")
+    annotations_path.write_text('{"success": true}\n', encoding="utf-8")
 
     tools = {
         "generate_taxonomy": FakeTool(
@@ -223,12 +246,14 @@ def test_full_agentic_debug_flow_stubs_train_and_eval_but_generates_report(tmp_p
     sft_path = tmp_path / "sft" / "sft.jsonl"
     annotations_path = tmp_path / "sft" / "annotations.jsonl"
     manifest_path = tmp_path / "dataset_manifest.json"
+    image_path = images_dir / "food.jpg"
 
     for path in (dataset_dir, images_dir):
         path.mkdir(parents=True)
-    images_index.write_text("[]", encoding="utf-8")
+    image_path.write_bytes(b"image")
+    images_index.write_text(json.dumps([{"file_path": str(image_path), "img_url": "https://example.com/food.jpg"}]), encoding="utf-8")
     sft_path.parent.mkdir(parents=True)
-    sft_path.write_text('{"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}\n', encoding="utf-8")
+    sft_path.write_text(_image_sft_jsonl(image_path), encoding="utf-8")
     annotations_path.write_text('{"success": true}\n', encoding="utf-8")
     manifest_path.write_text("{}\n", encoding="utf-8")
 
@@ -343,12 +368,14 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
     sft_path = tmp_path / "sft" / "sft.jsonl"
     annotations_path = tmp_path / "sft" / "annotations.jsonl"
     manifest_path = tmp_path / "dataset_manifest.json"
+    image_path = images_dir / "food.jpg"
 
     for path in (dataset_dir, images_dir):
         path.mkdir(parents=True)
-    images_index.write_text("[]", encoding="utf-8")
+    image_path.write_bytes(b"image")
+    images_index.write_text(json.dumps([{"file_path": str(image_path), "img_url": "https://example.com/food.jpg"}]), encoding="utf-8")
     sft_path.parent.mkdir(parents=True)
-    sft_path.write_text('{"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}\n', encoding="utf-8")
+    sft_path.write_text(_image_sft_jsonl(image_path), encoding="utf-8")
     annotations_path.write_text('{"success": true}\n', encoding="utf-8")
     stale_registry_path = sft_path.parent / "collected_texts_merged.jsonl"
     stale_cache_path = sft_path.parent / "text_annotation_cache.jsonl"
@@ -375,7 +402,10 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
             },
         },
         dirs=[dataset_dir, images_dir],
-        files={images_index: "[]\n"},
+        files={
+            image_path: "image",
+            images_index: json.dumps([{"file_path": str(image_path), "img_url": "https://example.com/food.jpg"}]),
+        },
     )
     tools = {
         "generate_taxonomy": taxonomy_tool,
@@ -391,7 +421,7 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
                 "sft_path": str(sft_path),
             },
             files={
-                sft_path: '{"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}\n',
+                sft_path: _image_sft_jsonl(image_path),
                 annotations_path: '{"success": true}\n',
             },
         ),
