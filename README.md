@@ -13,10 +13,10 @@ The stages do the following:
 - `generate_taxonomy`: builds culture/domain categories, subcategories, text search queries, and optional language-agnostic image taxonomy slots.
 - `collect_data`: uses Serper text search and, when enabled, Serper Google Images to collect raw text and image data.
 - `assess_coverage_and_refine_queries`: checks whether collected text/images cover enough queries and image taxonomy slots; if not, it routes back to collection with refined text queries or targeted image query specs.
-- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM; when `HF_DATASET_REPO` is configured, the SFT JSONL is pushed to Hugging Face Hub.
-- `build_dataset`: builds a Hugging Face dataset with `train` and `validation` splits.
-- `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled; when `HF_ADAPTER_REPO` is configured, the produced LoRA adapter is pushed to Hugging Face Hub.
-- `evaluate_model`: checks train-health logs, runs deterministic validation evaluation, and can optionally run a categorical LLM-as-judge quality gate.
+- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM and validates row schema/content before training.
+- `build_dataset`: builds a Hugging Face dataset with `train` and `validation` splits; when `HF_DATASET_REPO` is configured, the split dataset is pushed to Hugging Face Hub after this stage passes.
+- `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled.
+- `evaluate_model`: checks train-health logs, runs deterministic validation evaluation, and can optionally run a categorical LLM-as-judge quality gate; when `HF_ADAPTER_REPO` is configured, the real LoRA adapter is pushed only after this stage passes.
 - `generate_report`: writes the final run report from collected artifacts and metrics.
 
 Agentic behavior currently happens in bounded places:
@@ -81,7 +81,7 @@ Required for `full_agentic`:
 Optional but common:
 
 - `HF_TOKEN`: needed for private/gated Hugging Face models and optional pushes.
-- `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated SFT dataset and LoRA adapter to Hugging Face Hub from `full_agentic` and `workflow` runs. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
+- `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated split dataset and post-eval LoRA adapter to Hugging Face Hub from `full_agentic` runs. Non-agentic `full` and `workflow` also push after their shared eval gate passes, but use a simpler upload path. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
 - `SFT_REUSE_ANNOTATIONS=true`: reuse cached text SFT annotations across collection recovery attempts. Enabled by default.
 - `TEXT_QUALITY_ENABLE_EMBEDDINGS=true`: enable embedding near-duplicate diagnostics. The default model is `Qwen/Qwen3-Embedding-0.6B`; leave this disabled for quick smoke runs if you do not want an extra model download.
@@ -190,7 +190,7 @@ The judge reuses the configured `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` p
 }
 ```
 
-When judge is enabled, deterministic string-similarity failures are kept as diagnostics, but the judge gate is the primary quality signal. If source metadata is available, the judge checks whether predictions are supported by retained source excerpts.
+When judge is enabled, deterministic string-similarity failures are kept as diagnostics and the judge gate becomes the primary semantic quality signal. Train-health failures, unsupported grounding, insufficient source evidence, and judge failure categories can still block evaluation and drive bounded recovery. If source metadata is available, the judge checks whether predictions are supported by retained source excerpts.
 
 ## Held-Out Source Evaluation
 
@@ -234,12 +234,14 @@ HF_ADAPTER_REPO=horde-agent-kazakhstan-lora
 
 `HF_USERNAME` is optional. If it is omitted, the Hub username is resolved from `HF_TOKEN`. If a repo value already includes an owner, for example `my-org/horde-agent-kazakhstan-lora`, that owner is used.
 
-Adapter upload happens only after real `train_model` succeeds. `debug_stub_train` skips adapter upload to avoid publishing dummy adapters. Dataset upload happens after `build_sft_dataset` succeeds.
+In `full_agentic`, dataset upload happens after `build_dataset` succeeds, so the published dataset preserves the train/validation splits. Adapter upload happens only after real `evaluate_model` passes the eval quality gate. `debug_stub_train` and `debug_stub_eval` skip adapter upload to avoid publishing dummy adapters or adapters validated only by stubbed eval.
 
-The upload path writes Hub `README.md` cards:
+The `full_agentic` upload path writes Hub `README.md` cards:
 
 - Dataset cards describe modality, source/filtering quality, duplicate diagnostics, and train/validation split metadata once `build_dataset` succeeds.
-- Adapter cards describe the base model, training settings/metrics, and are updated after `evaluate_model` with base-vs-adapter lift, failure rate, train-health, judge quality, and unsupported-grounding metrics.
+- Adapter cards describe the base model, training settings/metrics, base-vs-adapter lift, failure rate, train-health, judge quality, and unsupported-grounding metrics after `evaluate_model` succeeds.
+
+Non-agentic `full` and `workflow` validate eval before adapter upload, but currently use a simpler Hub helper that does not write the richer card content. `minimal_agentic` is a legacy path and currently still pushes the adapter before evaluation; do not use it for publishing-quality runs.
 
 Upload repo ids, card update status, or upload errors are recorded in agent artifacts and the final report.
 
