@@ -23,6 +23,7 @@ from core.data.text_quality import (
     write_text_quality_report,
 )
 from core.data.image_sft_tasks import normalize_image_sft_tasks
+from core.redaction import sanitize_secret_text
 from core.agentic.validators import (
     validate_collection_output,
     validate_dataset_output,
@@ -570,6 +571,7 @@ class AgenticToolAdapter:
 
 
 def _failed_result(stage: ActionType, exc: Exception) -> ActionResult:
+    safe_error = str(sanitize_secret_text(f"{type(exc).__name__}:{exc}"))
     return ActionResult(
         action_type=stage,
         status="failed",
@@ -577,9 +579,9 @@ def _failed_result(stage: ActionType, exc: Exception) -> ActionResult:
             stage=stage,
             passed=False,
             recoverable=_is_recoverable_exception(exc),
-            blocking_issues=[f"{type(exc).__name__}:{exc}"],
+            blocking_issues=[safe_error],
         ),
-        error=str(exc),
+        error=str(sanitize_secret_text(str(exc))),
     )
 
 
@@ -1056,8 +1058,9 @@ def _push_hf_outputs_if_configured(
                 pushed["hf_dataset_card_updated"] = True
             logger.info("SFT dataset pushed to HF Hub: %s", pushed["dataset_repo_id"])
         except Exception as exc:
-            pushed["hf_dataset_upload_error"] = f"{type(exc).__name__}: {exc}"
-            logger.error("Failed to push SFT dataset to HF Hub: %s", exc)
+            safe_error = sanitize_secret_text(f"{type(exc).__name__}: {exc}")
+            pushed["hf_dataset_upload_error"] = safe_error
+            logger.error("Failed to push SFT dataset to HF Hub: %s", safe_error)
 
     adapter_repo = _stripped(config.get("hf_adapter_repo"))
     if adapter_path and adapter_repo:
@@ -1075,8 +1078,9 @@ def _push_hf_outputs_if_configured(
                 pushed["hf_adapter_card_updated"] = True
             logger.info("LoRA adapter pushed to HF Hub: %s", pushed["adapter_repo_id"])
         except Exception as exc:
-            pushed["hf_adapter_upload_error"] = f"{type(exc).__name__}: {exc}"
-            logger.error("Failed to push LoRA adapter to HF Hub: %s", exc)
+            safe_error = sanitize_secret_text(f"{type(exc).__name__}: {exc}")
+            pushed["hf_adapter_upload_error"] = safe_error
+            logger.error("Failed to push LoRA adapter to HF Hub: %s", safe_error)
 
     return pushed
 
@@ -1102,8 +1106,9 @@ def _update_hf_dataset_card_if_configured(
         update_repo_readme(repo_id, readme, repo_type="dataset")
         return {"hf_dataset_card_updated": True}
     except Exception as exc:
-        logger.error("Failed to update HF dataset card: %s", exc)
-        return {"hf_dataset_card_update_error": f"{type(exc).__name__}: {exc}"}
+        safe_error = sanitize_secret_text(f"{type(exc).__name__}: {exc}")
+        logger.error("Failed to update HF dataset card: %s", safe_error)
+        return {"hf_dataset_card_update_error": safe_error}
 
 
 def _update_hf_adapter_card_if_configured(
@@ -1125,8 +1130,9 @@ def _update_hf_adapter_card_if_configured(
         update_repo_readme(repo_id, readme, repo_type="model")
         return {"hf_adapter_card_updated": True}
     except Exception as exc:
-        logger.error("Failed to update HF adapter card: %s", exc)
-        return {"hf_adapter_card_update_error": f"{type(exc).__name__}: {exc}"}
+        safe_error = sanitize_secret_text(f"{type(exc).__name__}: {exc}")
+        logger.error("Failed to update HF adapter card: %s", safe_error)
+        return {"hf_adapter_card_update_error": safe_error}
 
 
 def _build_dataset_card(

@@ -33,6 +33,8 @@ from typing import Any, Dict, Iterable, List, Optional, Type, TypeVar
 import httpx
 from pydantic import BaseModel
 
+from core.redaction import sanitize_secret_text
+
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
@@ -388,19 +390,21 @@ class LLMClient:
                                 pass
                         delay = max(delay, 5.0)
 
+                safe_exc = sanitize_secret_text(str(exc))
                 logger.warning(
                     "[%s] Request '%s' attempt %d/%d failed: %s",
                     self.provider,
                     req.request_id,
                     attempt,
                     self.max_retries,
-                    exc,
+                    safe_exc,
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(delay)
 
         raise RuntimeError(
-            f"Request '{req.request_id}' failed after {self.max_retries} retries: {last_exc}"
+            f"Request '{req.request_id}' failed after {self.max_retries} retries: "
+            f"{sanitize_secret_text(str(last_exc))}"
         ) from last_exc
 
     # ── public async API ───────────────────────────────────────────────────
@@ -419,7 +423,7 @@ class LLMClient:
                 return LLMResponse(
                     request_id=request.request_id,
                     success=False,
-                    error=str(exc),
+                    error=str(sanitize_secret_text(str(exc))),
                 )
 
     async def generate_json_batch(

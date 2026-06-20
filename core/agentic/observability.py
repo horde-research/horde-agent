@@ -9,6 +9,7 @@ from typing import Any, List, Optional, Protocol
 from langsmith.run_trees import RunTree
 
 from core.agentic.models import ActionRequest, ActionResult, PipelineState
+from core.redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,11 @@ class LangSmithObserver:
         self._root = RunTree(
             name="Horde Agent Full Run",
             run_type="chain",
-            inputs={
+            inputs=redact_secrets({
                 "run_dir": state.run_dir,
                 "mode": state.mode,
                 "config": state.config,
-            },
+            }),
             project_name=self.project_name,
         )
         self._root.post()
@@ -65,11 +66,11 @@ class LangSmithObserver:
         child = self._root.create_child(
             name=request.action_type.value,
             run_type="tool",
-            inputs={
+            inputs=redact_secrets({
                 "request": request.to_dict(),
                 "completed_stages": list(state.completed_stages),
                 "retry_counts": dict(state.retry_counts),
-            },
+            }),
         )
         child.post()
         logger.info(
@@ -83,7 +84,7 @@ class LangSmithObserver:
         if not self._active_children:
             raise RuntimeError("No active LangSmith child run to finish.")
         child = self._active_children.pop()
-        child.end(outputs={"result": result.to_dict()})
+        child.end(outputs=redact_secrets({"result": result.to_dict()}))
         child.patch()
         logger.info(
             "LangSmith stage span finished: stage=%s status=%s",
@@ -95,12 +96,12 @@ class LangSmithObserver:
         if self._root is None:
             raise RuntimeError("LangSmith root run has not been started.")
         self._root.end(
-            outputs={
+            outputs=redact_secrets({
                 "termination_reason": state.termination_reason,
                 "completed_stages": list(state.completed_stages),
                 "retry_counts": dict(state.retry_counts),
                 "blockers": list(state.blockers),
-            }
+            })
         )
         self._root.patch()
         logger.info(

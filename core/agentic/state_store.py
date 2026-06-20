@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agentic.models import PipelineState, _STAGE_ARTIFACT_KEYS
+from core.redaction import is_secret_key, redact_secrets
 
 
 class PipelineStateStore:
@@ -71,13 +72,7 @@ def _to_json(payload: dict[str, Any]) -> str:
 
 
 def _redact_secrets(value: Any, key: str = "") -> Any:
-    if _is_secret_key(key):
-        return "[REDACTED]" if value not in (None, "") else value
-    if isinstance(value, dict):
-        return {str(item_key): _redact_secrets(item_value, str(item_key)) for item_key, item_value in value.items()}
-    if isinstance(value, list):
-        return [_redact_secrets(item) for item in value]
-    return value
+    return redact_secrets(value, key)
 
 
 def _compact_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -103,14 +98,7 @@ def _compact_result_payload(result: dict[str, Any]) -> None:
 
 
 def _is_secret_key(key: str) -> bool:
-    normalized = key.lower()
-    if not normalized:
-        return False
-    if normalized in {"api_key", "token", "secret", "password"}:
-        return True
-    if normalized.endswith("_api_key") or normalized.endswith("_token"):
-        return True
-    return "password" in normalized or "secret" in normalized
+    return is_secret_key(key)
 
 
 def _build_artifact_manifest(

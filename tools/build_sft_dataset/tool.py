@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List
 
 from core.llm import LLMClient
 from core.data.image_sft_tasks import normalize_image_sft_tasks
+from core.redaction import redact_secrets
 from tools.base_tool import BaseTool
 from tools.build_sft_dataset.agents import ImageAnnotationAgent, TextAnnotationAgent
 from tools.build_sft_dataset.loaders import (
@@ -36,7 +37,7 @@ def _write_jsonl(path: str, rows: Iterable[Dict]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json.dumps(redact_secrets(row), ensure_ascii=False) + "\n")
 
 
 class BuildSftDatasetTool(BaseTool):
@@ -375,4 +376,4 @@ def _write_annotation_cache(path: str, rows: Iterable[Dict[str, Any]]) -> None:
     ordered = sorted(rows, key=lambda row: str(row.get("cache_key") or ""))
     with open(path, "w", encoding="utf-8") as handle:
         for row in ordered:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(redact_secrets(row), ensure_ascii=False) + "\n")
