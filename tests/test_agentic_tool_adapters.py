@@ -302,10 +302,29 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     images_index = tmp_path / "collect" / "images.json"
     images_dir.mkdir(parents=True)
     images_index.write_text("[]", encoding="utf-8")
+    image_path = images_dir / "image.jpg"
+    image_path.write_bytes(b"fake")
     sft_path = tmp_path / "sft" / "sft.jsonl"
     annotations_path = tmp_path / "sft" / "annotations.jsonl"
     sft_path.parent.mkdir(parents=True)
-    sft_path.write_text('{"messages": []}\n', encoding="utf-8")
+    sft_path.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": str(image_path)},
+                            {"type": "text", "text": "Describe this image."},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "A caption."}]},
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     annotations_path.write_text('{"success": true}\n', encoding="utf-8")
 
     sft_tool = FakeTool(
@@ -742,9 +761,33 @@ def test_sft_validator_requires_examples_and_sft_path(tmp_path: Path) -> None:
     assert "num_examples_below_minimum" in missing_report.blocking_issues
 
     sft_path = tmp_path / "sft.jsonl"
-    sft_path.write_text('{"messages": []}\n', encoding="utf-8")
-    passing_report = validate_sft_output({"num_examples": 1, "sft_path": str(sft_path)})
+    sft_path.write_text(
+        json.dumps({"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]})
+        + "\n",
+        encoding="utf-8",
+    )
+    passing_report = validate_sft_output({"mode": "text", "num_examples": 1, "sft_path": str(sft_path)})
     assert passing_report.passed
+
+    invalid_path = tmp_path / "invalid_sft.jsonl"
+    invalid_path.write_text('{"messages": []}\n', encoding="utf-8")
+    invalid_report = validate_sft_output({"mode": "text", "num_examples": 1, "sft_path": str(invalid_path)})
+    assert not invalid_report.passed
+    assert "sft_messages_missing" in invalid_report.blocking_issues
+
+
+def test_sft_validator_rejects_invalid_image_rows(tmp_path: Path) -> None:
+    image_sft_path = tmp_path / "image_sft.jsonl"
+    image_sft_path.write_text(
+        json.dumps({"messages": [{"role": "user", "content": "Describe"}, {"role": "assistant", "content": "A"}]})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = validate_sft_output({"mode": "image", "num_examples": 1, "sft_path": str(image_sft_path)})
+
+    assert not report.passed
+    assert "sft_image_content_missing" in report.blocking_issues
 
 
 def test_debug_stub_train_returns_valid_training_contract(tmp_path: Path) -> None:

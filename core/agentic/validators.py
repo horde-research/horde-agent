@@ -188,6 +188,13 @@ def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
     num_failures = int(output.get("num_failures") or 0)
     num_items = int(output.get("num_items") or 0)
     failure_rate = num_failures / num_items if num_items else 0.0
+    mode = str(output.get("mode") or output.get("sft_mode") or "text").strip().lower()
+    sft_path = output.get("sft_path")
+    row_quality = _validate_sft_jsonl(sft_path, mode=mode) if _path_exists(sft_path) else {
+        "row_count": 0,
+        "invalid_row_count": 0,
+        "issue_counts": {},
+    }
 
     blocking_issues: List[str] = []
     recommended_actions: List[str] = []
@@ -196,8 +203,18 @@ def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
         blocking_issues.append("num_examples_below_minimum")
         recommended_actions.append("retry_sft_with_stricter_prompt")
         suggested_adjustments["sft_prompt_preset"] = "schema_strict"
-    if not _path_exists(output.get("sft_path")):
+    if not _path_exists(sft_path):
         blocking_issues.append("sft_path_missing")
+    elif row_quality["row_count"] <= 0:
+        blocking_issues.append("sft_jsonl_empty")
+        recommended_actions.append("retry_sft_with_stricter_prompt")
+        suggested_adjustments["sft_prompt_preset"] = "schema_strict"
+    elif row_quality["invalid_row_count"] > 0:
+        blocking_issues.extend(sorted(row_quality["issue_counts"]))
+        recommended_actions.append("repair_sft_schema")
+        suggested_adjustments["sft_prompt_preset"] = "schema_strict"
+    if row_quality["row_count"] and num_examples and row_quality["row_count"] != num_examples:
+        blocking_issues.append("num_examples_mismatch_sft_rows")
     if failure_rate >= 1.0 and num_items:
         blocking_issues.append("all_annotations_failed")
         recommended_actions.append("reduce_sft_batch_size")
@@ -217,10 +234,112 @@ def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
             "num_examples": num_examples,
             "num_failures": num_failures,
             "failure_rate": failure_rate,
+            "sft_row_count": row_quality["row_count"],
+            "sft_invalid_row_count": row_quality["invalid_row_count"],
+            "sft_issue_counts": row_quality["issue_counts"],
         },
         recommended_actions=recommended_actions,
         suggested_adjustments=suggested_adjustments,
     )
+
+
+def _validate_sft_jsonl(path: Any, *, mode: str) -> Dict[str, Any]:
+    issue_counts: dict[str, int] = {}
+    row_count = 0
+    invalid_count = 0
+    with Path(str(path)).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row_count += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_count += 1
+                _increment_issue(issue_counts, "sft_row_invalid_json")
+                continue
+            issues = _sft_row_issues(row, mode=mode)
+            if issues:
+                invalid_count += 1
+                for issue in issues:
+                    _increment_issue(issue_counts, issue)
+    return {
+        "row_count": row_count,
+        "invalid_row_count": invalid_count,
+        "issue_counts": issue_counts,
+    }
+
+
+def _sft_row_issues(row: Any, *, mode: str) -> list[str]:
+    if not isinstance(row, dict):
+        return ["sft_row_not_object"]
+    messages = row.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return ["sft_messages_missing"]
+    issues: list[str] = []
+    roles = [str(message.get("role") or "").strip().lower() for message in messages if isinstance(message, dict)]
+    if "user" not in roles:
+        issues.append("sft_user_message_missing")
+    if "assistant" not in roles:
+        issues.append("sft_assistant_message_missing")
+    assistant_texts = [
+        _message_text(message)
+        for message in messages
+        if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "assistant"
+    ]
+    if not any(text.strip() for text in assistant_texts):
+        issues.append("sft_assistant_content_empty")
+    all_text = "\n".join(_message_text(message) for message in messages if isinstance(message, dict))
+    if "(no text collected)" in all_text:
+        issues.append("sft_placeholder_content")
+    if mode == "image":
+        image_paths = _sft_image_paths(messages)
+        if not image_paths:
+            issues.append("sft_image_content_missing")
+        elif len(image_paths) > 1:
+            issues.append("sft_multiple_images_unsupported")
+        elif not Path(image_paths[0]).exists():
+            issues.append("sft_image_path_missing")
+    return issues
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif "text" in item:
+                    parts.append(str(item.get("text") or ""))
+            elif item is not None:
+                parts.append(str(item))
+        return " ".join(part for part in parts if part)
+    return "" if content is None else str(content)
+
+
+def _sft_image_paths(messages: list[Any]) -> list[str]:
+    paths: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "image":
+                image_path = str(item.get("image") or item.get("path") or "").strip()
+                if image_path:
+                    paths.append(image_path)
+    return paths
+
+
+def _increment_issue(issue_counts: dict[str, int], issue: str) -> None:
+    issue_counts[issue] = issue_counts.get(issue, 0) + 1
 
 
 def validate_dataset_output(output: Dict[str, Any]) -> QualityReport:
