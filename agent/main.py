@@ -130,6 +130,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-split", type=str, default=None, help="Dataset split used by evaluation")
     parser.add_argument("--hf_model_id", default=None, help="Base HuggingFace model id for training")
     parser.add_argument(
+        "--lora_preset_key",
+        "--lora-preset-key",
+        dest="lora_preset_key",
+        default=None,
+        help="LoRA preset key used by the trainer",
+    )
+    parser.add_argument(
+        "--train_grad_accum",
+        "--train-grad-accum",
+        dest="train_grad_accum",
+        type=int,
+        default=None,
+        help="Gradient accumulation steps for training",
+    )
+    parser.add_argument(
         "--training-modality",
         choices=["text", "image"],
         default=None,
@@ -199,6 +214,10 @@ def main() -> None:
         overrides["max_queries_per_category"] = args.max_queries_per_category
     if args.hf_model_id:
         overrides["hf_model_id"] = args.hf_model_id
+    if args.lora_preset_key:
+        overrides["lora_preset_key"] = args.lora_preset_key
+    if args.train_grad_accum is not None:
+        overrides["train_grad_accum"] = args.train_grad_accum
     if args.training_modality:
         overrides["training_modality"] = args.training_modality
     if args.image_sft_tasks:
