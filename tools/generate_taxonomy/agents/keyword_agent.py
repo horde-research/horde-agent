@@ -56,13 +56,16 @@ class QueryAgent:
         subcategory_name: str,
         subcategory_description: str,
         country_or_culture: str,
+        focus: str = "",
     ) -> str:
+        focus_line = f"Scope/focus: {focus}\n" if focus else ""
         return (
             f"Generate Google search queries for the following subcategory:\n\n"
             f"Category: {category_name}\n"
             f"Subcategory: {subcategory_name}\n"
             f"Subcategory Description: {subcategory_description}\n"
             f"Country/Culture: {country_or_culture}\n\n"
+            f"{focus_line}"
             f"REQUIREMENT: Generate 8-12 complete, ready-to-search Google queries "
             f"that MUST include BOTH native language(s) of {country_or_culture} AND "
             f"English queries. Use native script where appropriate."
@@ -76,6 +79,7 @@ class QueryAgent:
         *,
         batch_size: int = 5,
         batch_delay: float = 1.5,
+        focus: str = "",
     ) -> Dict[str, Dict[str, List[str]]]:
         """
         Generate search queries for all subcategories in one batched call.
@@ -100,6 +104,7 @@ class QueryAgent:
                             sub["name"],
                             sub.get("description", ""),
                             country_or_culture,
+                            focus,
                         ),
                     )
                 )
@@ -137,12 +142,16 @@ class QueryAgent:
         country_or_culture: str,
         quality_report: Dict[str, Any],
         culture_profile: Dict[str, Any],
+        *,
+        focus: str = "",
     ) -> List[str]:
         category_name = category["name"]
         subcategory_name = subcategory["name"]
+        focus_line = f"Scope/focus: {focus}\n" if focus else ""
         user_message = (
             "Repair Google search queries for one cultural subcategory before web collection.\n\n"
             f"Country/Culture: {country_or_culture}\n"
+            f"{focus_line}"
             f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
             f"Category:\n{json.dumps(category, ensure_ascii=False, indent=2)}\n\n"
             f"Subcategory:\n{json.dumps(subcategory, ensure_ascii=False, indent=2)}\n\n"

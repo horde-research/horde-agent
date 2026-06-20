@@ -71,6 +71,8 @@ def assess_text_source_quality(
     applied deterministically from the resulting policy plus local features.
     """
     cfg = dict(config or {})
+    focus = str(cfg.get("focus") or cfg.get("domain_focus") or "").strip()
+    target_entity = str(cfg.get("country") or cfg.get("target_entity") or "").strip()
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +80,7 @@ def assess_text_source_quality(
     rows = [dict(dataset[i]) for i in range(len(dataset))]
     query_list = [str(query).strip() for query in (queries or []) if str(query).strip()]
     taxonomy_terms = _taxonomy_terms(taxonomy or {}, query_list)
+    taxonomy_terms.update(_tokens(focus))
 
     profile_rows = profile_source_rows(rows, queries=query_list, taxonomy_terms=taxonomy_terms)
     clusters = cluster_source_rows(
@@ -90,6 +93,8 @@ def assess_text_source_quality(
         taxonomy=taxonomy or {},
         queries=query_list,
         max_clusters=_int_cfg(cfg, "source_quality_oracle_max_clusters", 30),
+        target_entity=target_entity,
+        focus=focus,
     )
     deterministic_policy = build_deterministic_policy(clusters, cfg)
     oracle_policy = _maybe_call_oracle(oracle_payload, cfg, llm_client)
@@ -278,10 +283,14 @@ def build_oracle_payload(
     taxonomy: Mapping[str, Any],
     queries: list[str],
     max_clusters: int,
+    target_entity: str = "",
+    focus: str = "",
 ) -> dict[str, Any]:
     return {
         "schema_version": "source_quality.oracle_payload.v1",
         "task": "Infer a language-agnostic source quality policy from aggregate crawl clusters.",
+        "target_entity": target_entity or None,
+        "focus": focus or None,
         "taxonomy_summary": _compact_taxonomy(taxonomy),
         "queries_sample": queries[:40],
         "num_queries": len(queries),

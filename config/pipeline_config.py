@@ -23,6 +23,7 @@ class PipelineConfig(BaseModel):
     mode: str = "full"
     run_dir: str = "/Users/sasha/Desktop/hugging_face/horde-agent/run_full_res_2"
     country: str = ""
+    focus: str = ""
     resume_confirm_completed: bool = False
     restart_from_stage: Optional[str] = None
     fresh_run: bool = False
@@ -166,6 +167,7 @@ class PipelineConfig(BaseModel):
         env_values = {
             "mode": os.getenv("MODE"),
             "country": os.getenv("COUNTRY"),
+            "focus": os.getenv("FOCUS"),
             "run_dir": os.getenv("RUN_DIR"),
             "resume_confirm_completed": os.getenv("RESUME_CONFIRM_COMPLETED"),
             "restart_from_stage": os.getenv("RESTART_FROM_STAGE"),

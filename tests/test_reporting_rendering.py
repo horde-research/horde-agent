@@ -64,13 +64,22 @@ def test_write_report_renders_dataset_example_readably(tmp_path: Path) -> None:
         failures_path="",
         cluster_preview={},
         error_analysis={"status": "No evaluation failures detected."},
-        pipeline_summary={},
+        pipeline_summary={
+            "run_summary": {
+                "country": "Kazakhstan",
+                "focus": "traditional culture",
+                "training_modality": "text",
+                "target_language": "English",
+                "hf_model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+            }
+        },
     )
 
     report_text = Path(report_path).read_text(encoding="utf-8")
     assert "## Dataset Example" in report_text
     assert "[image: /tmp/image.jpg]" in report_text
     assert "A red square." in report_text
+    assert "Scope/focus: traditional culture" in report_text
     assert '"image": null' not in report_text
 
 

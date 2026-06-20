@@ -205,6 +205,53 @@ def test_llm_judge_aggregates_major_failures(monkeypatch, tmp_path: Path) -> Non
     assert "source-1" in judge_text
 
 
+def test_llm_judge_includes_focus_in_prompt_and_summary(monkeypatch, tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    _write_jsonl(
+        predictions_path,
+        [
+            {
+                "id": 0,
+                "input": "What is the shanyrak?",
+                "prediction": "A yurt crown.",
+                "reference": "The shanyrak is the circular crown of a Kazakh yurt.",
+                "source_excerpt": "The shanyrak is the circular crown of a Kazakh yurt.",
+            },
+        ],
+    )
+    captured_messages: list[str] = []
+
+    class CapturingJudgeClient:
+        def generate_json_batch_sync(self, requests, *, batch_size=5, batch_delay_seconds=1.5):  # noqa: ANN001
+            captured_messages.extend(request.user_message for request in requests)
+            return [
+                LLMResponse(
+                    request_id=requests[0].request_id,
+                    success=True,
+                    data={"verdict": "pass", "grounding": "supported", "categories": []},
+                )
+            ]
+
+    monkeypatch.setattr("tools.eval_model.eval.llm_judge.LLMClient.from_env", lambda **kwargs: CapturingJudgeClient())
+
+    summary = run_llm_judge(
+        str(predictions_path),
+        str(tmp_path),
+        modality="text",
+        target_language="English",
+        focus="traditional culture",
+        provider="fake",
+        model="fake",
+        api_key="fake",
+        batch_size=1,
+        batch_delay=0.0,
+    )
+
+    assert summary["focus"] == "traditional culture"
+    assert captured_messages
+    assert "Scope/focus: traditional culture" in captured_messages[0]
+
+
 def test_eval_validator_uses_judge_gate_over_heuristic_failure_rate(tmp_path: Path) -> None:
     predictions_path = tmp_path / "predictions.jsonl"
     failures_path = tmp_path / "failures.jsonl"

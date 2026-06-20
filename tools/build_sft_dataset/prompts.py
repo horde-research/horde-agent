@@ -34,6 +34,7 @@ def build_image_prompt(
     topic_hint: Optional[str] = None,
     prompt_preset: str = "default",
     image_tasks: object = None,
+    focus: str = "",
 ) -> str:
     tasks = normalize_image_sft_tasks(image_tasks)
     topic_line = ""
@@ -43,6 +44,11 @@ def build_image_prompt(
             "Reference this ONLY if the visual content clearly aligns with this topic. "
             "If the image does not match the topic, ignore it entirely — describe only "
             "what you actually see."
+        )
+    if focus:
+        topic_line += (
+            f"\nScope/focus: {focus}. Prefer examples that are relevant to this focus "
+            "only when the visible image evidence supports that relevance."
         )
     preset_line = _prompt_preset_instructions(prompt_preset, mode="image")
     if tasks == ["caption"]:
@@ -290,8 +296,9 @@ Respond with a SINGLE valid JSON object — no markdown fences, no commentary.
 }}"""
 
 
-def build_text_prompt(target_language: str = "English", prompt_preset: str = "default") -> str:
+def build_text_prompt(target_language: str = "English", prompt_preset: str = "default", focus: str = "") -> str:
     preset_line = _prompt_preset_instructions(prompt_preset, mode="text")
+    focus_line = f"Scope/focus: {focus}\n" if focus else ""
     return f"""You are a world-class AI training-data engineer. You will receive a
 SOURCE TEXT that contains factual information about a topic, culture, or domain.
 
@@ -316,6 +323,7 @@ training pairs that will TEACH a model this knowledge permanently.
 
 Target language for ALL generated text: {target_language}
 Prompt preset: {prompt_preset}
+{focus_line}
 {preset_line}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -331,6 +339,9 @@ ABSOLUTE RULES
    No mechanical "What does paragraph 3 state?" phrasing.
 5. DIVERSE — each pair must teach something genuinely different. No two
    questions should be answerable with the same piece of information.
+6. IN-SCOPE — if a scope/focus is provided, prefer source-backed facts that
+   are relevant to that focus. Do not invent focus-related facts that are not
+   present in the source.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FIELD-BY-FIELD REQUIREMENTS

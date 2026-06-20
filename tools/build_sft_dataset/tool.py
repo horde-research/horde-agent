@@ -82,6 +82,7 @@ class BuildSftDatasetTool(BaseTool):
 
         target_language = config.get("target_language", "English")
         prompt_preset = config.get("prompt_preset", "default")
+        focus = str(config.get("focus") or "").strip()
         image_tasks = normalize_image_sft_tasks(config.get("image_tasks") or config.get("image_sft_tasks"))
         batch_size = config.get("batch_size", 5)
         batch_delay = config.get("batch_delay", 1.0)
@@ -109,6 +110,7 @@ class BuildSftDatasetTool(BaseTool):
                 batch_delay=batch_delay,
                 prompt_preset=prompt_preset,
                 image_tasks=image_tasks,
+                focus=focus,
             )
         else:
             agent = TextAnnotationAgent(
@@ -117,6 +119,7 @@ class BuildSftDatasetTool(BaseTool):
                 batch_size=batch_size,
                 batch_delay=batch_delay,
                 prompt_preset=prompt_preset,
+                focus=focus,
             )
 
         if mode == "text" and config.get("reuse_annotations"):
@@ -126,6 +129,7 @@ class BuildSftDatasetTool(BaseTool):
                 config,
                 target_language=target_language,
                 prompt_preset=prompt_preset,
+                focus=focus,
             )
         else:
             annotations, failures = agent.annotate(items)
@@ -152,6 +156,7 @@ class BuildSftDatasetTool(BaseTool):
             "annotations_path": output_annotations,
             "sft_path": output_sft,
             "prompt_preset": prompt_preset,
+            "focus": focus,
             "image_tasks": image_tasks if mode == "image" else None,
             "annotation_reuse": reuse_summary,
             "annotation_cache_path": reuse_summary.get("cache_path"),
@@ -219,12 +224,14 @@ class BuildSftDatasetTool(BaseTool):
         *,
         target_language: str,
         prompt_preset: str,
+        focus: str,
     ) -> tuple[List[Dict[str, Any]], List[TextItem], Dict[str, Any]]:
         cache_path = str(config.get("annotation_cache_path") or "").strip()
         signature = _annotation_cache_signature(
             config.get("annotation_cache_metadata"),
             target_language=target_language,
             prompt_preset=prompt_preset,
+            focus=focus,
             provider=config.get("provider"),
             model=config.get("model"),
         )
@@ -318,6 +325,7 @@ def _annotation_cache_signature(
     *,
     target_language: str,
     prompt_preset: str,
+    focus: str,
     provider: Any,
     model: Any,
 ) -> Dict[str, Any]:
@@ -325,6 +333,7 @@ def _annotation_cache_signature(
     signature.setdefault("schema_version", "text_annotation.v1")
     signature.setdefault("target_language", target_language)
     signature.setdefault("prompt_preset", prompt_preset)
+    signature.setdefault("focus", focus)
     signature.setdefault("provider", provider)
     signature.setdefault("model", model)
     return {str(key): signature[key] for key in sorted(signature)}

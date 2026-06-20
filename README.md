@@ -82,11 +82,18 @@ Required for `full_agentic`:
 
 Optional but common:
 
+- `FOCUS` or `--focus`: optional scope inside the country/culture, such as `traditional culture`, `cuisine`, or `constitutional law`. Keep `COUNTRY` as the entity and use focus to bias taxonomy, source-quality oracle payloads, SFT annotation prompts, eval judge prompts, reports, Hub cards, and annotation cache signatures.
 - `HF_TOKEN`: needed for private/gated Hugging Face models and optional pushes.
 - `HF_DATASET_REPO`, `HF_ADAPTER_REPO`: push the generated split dataset and post-eval LoRA adapter to Hugging Face Hub from `full_agentic` runs. Non-agentic `full` and `workflow` also push after their shared eval gate passes, but use a simpler upload path. Values may be either repo names such as `horde-agent-kazakhstan-lora` or full repo ids such as `my-org/horde-agent-kazakhstan-lora`.
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
 - `SFT_REUSE_ANNOTATIONS=true`: reuse cached text SFT annotations across collection recovery attempts. Enabled by default.
 - `TEXT_QUALITY_ENABLE_EMBEDDINGS=true`: enable embedding near-duplicate diagnostics. The default model is `Qwen/Qwen3-Embedding-0.6B`; leave this disabled for quick smoke runs if you do not want an extra model download.
+
+For a scoped run, do not fold the scope into `--country`. Use:
+
+```bash
+--country Kazakhstan --focus "traditional culture"
+```
 
 ## CPU Debug Run
 

@@ -260,9 +260,11 @@ def build_image_taxonomy(
     *,
     queries_per_slot: int = 4,
     max_slots: int | None = None,
+    focus: str = "",
 ) -> Dict[str, Any]:
     domains = deepcopy(IMAGE_TAXONOMY)
     aliases = _culture_aliases(country_or_culture, culture_profile or {})
+    focus = str(focus or "").strip()
     slots: List[Dict[str, Any]] = []
 
     for domain in domains:
@@ -281,13 +283,14 @@ def build_image_taxonomy(
                     search_terms=subdomain["search_terms"],
                     query_intents=subdomain["query_intents"],
                     queries_per_slot=max(1, int(queries_per_slot)),
+                    focus=focus,
                 ),
             }
             slots.append(slot)
             if max_slots and len(slots) >= max_slots:
-                return _taxonomy_payload(country_or_culture, domains, slots)
+                return _taxonomy_payload(country_or_culture, domains, slots, focus=focus)
 
-    return _taxonomy_payload(country_or_culture, domains, slots)
+    return _taxonomy_payload(country_or_culture, domains, slots, focus=focus)
 
 
 def flatten_image_query_specs(image_taxonomy: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -318,10 +321,17 @@ def flatten_image_query_specs(image_taxonomy: Dict[str, Any]) -> List[Dict[str, 
     return specs
 
 
-def _taxonomy_payload(country_or_culture: str, domains: List[Dict[str, Any]], slots: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _taxonomy_payload(
+    country_or_culture: str,
+    domains: List[Dict[str, Any]],
+    slots: List[Dict[str, Any]],
+    *,
+    focus: str = "",
+) -> Dict[str, Any]:
     return {
         "schema_version": IMAGE_TAXONOMY_SCHEMA_VERSION,
         "country_or_culture": country_or_culture,
+        "focus": focus or None,
         "domains": domains,
         "slots": slots,
         "quality": {
@@ -339,6 +349,7 @@ def _build_slot_queries(
     search_terms: List[str],
     query_intents: List[str],
     queries_per_slot: int,
+    focus: str = "",
 ) -> List[Dict[str, str]]:
     queries: List[Dict[str, str]] = []
     seen: set[str] = set()
@@ -346,8 +357,9 @@ def _build_slot_queries(
     for alias in aliases:
         for intent in query_intents:
             for term in search_terms:
+                scoped_term = f"{focus} {term}".strip() if focus else term
                 template = _INTENT_TEMPLATES.get(intent, "{alias} {term} photo")
-                query = " ".join(template.format(alias=alias, term=term).split())
+                query = " ".join(template.format(alias=alias, term=scoped_term).split())
                 if query.lower() in seen:
                     continue
                 seen.add(query.lower())

@@ -23,6 +23,7 @@ class ImageAnnotationAgent:
         batch_delay: float = 1.0,
         prompt_preset: str = "default",
         image_tasks=None,
+        focus: str = "",
     ) -> None:
         self.client = client
         self.target_language = target_language
@@ -30,6 +31,7 @@ class ImageAnnotationAgent:
         self.batch_delay = batch_delay
         self.prompt_preset = prompt_preset
         self.image_tasks = normalize_image_sft_tasks(image_tasks)
+        self.focus = focus
 
     def annotate(
         self, items: List[ImageItem],
@@ -55,6 +57,7 @@ class ImageAnnotationAgent:
                     topic_hint=item.topic_hint,
                     prompt_preset=self.prompt_preset,
                     image_tasks=self.image_tasks,
+                    focus=self.focus,
                 )
             requests.append(
                 LLMRequest(

@@ -39,6 +39,8 @@ def test_setup_logging_suppresses_http_request_noise() -> None:
 def test_parser_accepts_lora_and_grad_accum_training_flags() -> None:
     args = build_parser().parse_args(
         [
+            "--focus",
+            "traditional culture",
             "--lora_preset_key",
             "lora_attn_medium",
             "--train-grad-accum",
@@ -46,6 +48,7 @@ def test_parser_accepts_lora_and_grad_accum_training_flags() -> None:
         ]
     )
 
+    assert args.focus == "traditional culture"
     assert args.lora_preset_key == "lora_attn_medium"
     assert args.train_grad_accum == 8
 
@@ -70,6 +73,8 @@ def test_main_forwards_lora_and_grad_accum_overrides(monkeypatch) -> None:
             "full_agentic",
             "--hf_model_id",
             "test-model",
+            "--focus",
+            "traditional culture",
             "--lora-preset-key",
             "lora_attn_medium",
             "--train_grad_accum",
@@ -82,5 +87,6 @@ def test_main_forwards_lora_and_grad_accum_overrides(monkeypatch) -> None:
     assert captured["tools"] is None
     assert captured["overrides"]["mode"] == "full_agentic"
     assert captured["overrides"]["hf_model_id"] == "test-model"
+    assert captured["overrides"]["focus"] == "traditional culture"
     assert captured["overrides"]["lora_preset_key"] == "lora_attn_medium"
     assert captured["overrides"]["train_grad_accum"] == 8

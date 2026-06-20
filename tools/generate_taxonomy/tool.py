@@ -43,6 +43,7 @@ class GenerateTaxonomyTool(BaseTool):
             raise ValueError("country_or_culture is required and must not be empty.")
 
         config = config or {}
+        focus = str(config.get("focus") or "").strip()
         batch_size = config.get("batch_size", 5)
         batch_delay = config.get("batch_delay", 1.5)
         enable_mini_loop = bool(config.get("enable_taxonomy_mini_loop", True))
@@ -72,7 +73,7 @@ class GenerateTaxonomyTool(BaseTool):
 
         # Step 1 -- categories (single request)
         logger.info("Step 1/3: Extracting categories for '%s'...", country_or_culture)
-        categories = category_agent.extract_categories(country_or_culture)
+        categories = category_agent.extract_categories(country_or_culture, focus=focus)
         category_report = validate_categories(
             categories,
             min_categories=min_categories,
@@ -88,6 +89,7 @@ class GenerateTaxonomyTool(BaseTool):
                     categories,
                     category_report,
                     culture_profile,
+                    focus=focus,
                 )
                 repair_attempts.append(
                     {
@@ -109,7 +111,7 @@ class GenerateTaxonomyTool(BaseTool):
         logger.info("Step 2/3: Generating subcategories for %d categories...", len(categories))
         category_subcategories = subcategory_agent.generate_for_categories(
             categories, country_or_culture,
-            batch_size=batch_size, batch_delay=batch_delay,
+            batch_size=batch_size, batch_delay=batch_delay, focus=focus,
         )
         subcategory_report = validate_subcategories(
             categories,
@@ -133,6 +135,7 @@ class GenerateTaxonomyTool(BaseTool):
                         country_or_culture,
                         subcategory_report["per_category"].get(category_name, {}),
                         culture_profile,
+                        focus=focus,
                     )
                     category_subcategories[category_name] = repaired
                 repair_attempts.append(
@@ -155,7 +158,7 @@ class GenerateTaxonomyTool(BaseTool):
         logger.info("Step 3/3: Generating search queries for %d subcategories...", total_subs)
         category_subcategory_queries = query_agent.generate_for_subcategories(
             categories, category_subcategories, country_or_culture,
-            batch_size=batch_size, batch_delay=batch_delay,
+            batch_size=batch_size, batch_delay=batch_delay, focus=focus,
         )
         query_report = validate_query_groups(
             categories,
@@ -185,6 +188,7 @@ class GenerateTaxonomyTool(BaseTool):
                         country_or_culture,
                         query_report["per_group"].get(f"{category_name}||{subcategory_name}", {}),
                         culture_profile,
+                        focus=focus,
                     )
                     category_subcategory_queries.setdefault(category_name, {})[subcategory_name] = repaired
                 repair_attempts.append(
@@ -220,6 +224,7 @@ class GenerateTaxonomyTool(BaseTool):
                 culture_profile,
                 queries_per_slot=image_queries_per_slot,
                 max_slots=image_max_slots,
+                focus=focus,
             )
             if enable_image_taxonomy
             else None
@@ -231,6 +236,8 @@ class GenerateTaxonomyTool(BaseTool):
             "category_subcategory_queries": category_subcategory_queries,
             "taxonomy_quality": taxonomy_quality,
         }
+        if focus:
+            output["focus"] = focus
         if image_taxonomy:
             output["image_taxonomy"] = image_taxonomy
         return output

@@ -106,7 +106,7 @@ class CategoryAgent:
     def __init__(self, client: LLMClient) -> None:
         self.client = client
 
-    def extract_categories(self, country_or_culture: str) -> List[Dict[str, str]]:
+    def extract_categories(self, country_or_culture: str, *, focus: str = "") -> List[Dict[str, str]]:
         """
         Extract comprehensive categories for a specific country or culture.
 
@@ -116,10 +116,12 @@ class CategoryAgent:
         Returns:
             List of ``{"name": ..., "description": ...}`` dicts.
         """
+        focus_block = _focus_block(focus)
         user_message = (
             f"Generate comprehensive data categories for documenting and "
             f"understanding the culture, customs, traditions, and recent trends "
             f"of: {country_or_culture}\n\n"
+            f"{focus_block}"
             f"Create detailed categories that would enable comprehensive data "
             f"collection covering traditional customs, social structures, "
             f"cultural arts, cuisine, clothing, architecture, language, "
@@ -148,10 +150,14 @@ class CategoryAgent:
         categories: List[Dict[str, str]],
         quality_report: Dict[str, Any],
         culture_profile: Dict[str, Any],
+        *,
+        focus: str = "",
     ) -> List[Dict[str, str]]:
+        focus_line = f"Scope/focus: {focus}\n" if focus else ""
         user_message = (
             "Refine the generated cultural category list before downstream data collection.\n\n"
             f"Country/Culture: {country_or_culture}\n"
+            f"{focus_line}"
             f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
             f"Current categories:\n{json.dumps(categories, ensure_ascii=False, indent=2)}\n\n"
             f"Quality report:\n{json.dumps(quality_report, ensure_ascii=False, indent=2)}\n\n"
@@ -171,3 +177,14 @@ class CategoryAgent:
         refined = resp.data.get("categories", [])
         logger.info("Refined categories from %d to %d.", len(categories), len(refined))
         return refined or categories
+
+
+def _focus_block(focus: str) -> str:
+    normalized = str(focus or "").strip()
+    if not normalized:
+        return ""
+    return (
+        f"Explicit scope/focus: {normalized}\n"
+        "Prioritize categories relevant to this focus. Include broader context only when it is necessary "
+        "to understand or collect high-quality data for the focus.\n\n"
+    )

@@ -12,6 +12,7 @@ from core.agentic.action_space import ActionType
 from core.agentic.models import ActionRequest, PipelineState
 from core.agentic.tool_adapters import AgenticToolAdapter
 from core.agentic.validators import validate_collection_output, validate_sft_output
+from tools.build_sft_dataset.tool import _annotation_cache_signature
 from tools.train.tool import TrainTool
 
 
@@ -73,6 +74,28 @@ class RecordingSftTool:
         }
 
 
+def test_text_annotation_cache_signature_includes_focus() -> None:
+    focused = _annotation_cache_signature(
+        None,
+        target_language="English",
+        prompt_preset="default",
+        focus="traditional culture",
+        provider="fake-provider",
+        model="fake-model",
+    )
+    broad = _annotation_cache_signature(
+        None,
+        target_language="English",
+        prompt_preset="default",
+        focus="",
+        provider="fake-provider",
+        model="fake-model",
+    )
+
+    assert focused["focus"] == "traditional culture"
+    assert focused != broad
+
+
 def test_generate_taxonomy_adapter_flattens_queries(tmp_path: Path) -> None:
     taxonomy_tool = FakeTool(
         {
@@ -87,7 +110,12 @@ def test_generate_taxonomy_adapter_flattens_queries(tmp_path: Path) -> None:
     adapter = AgenticToolAdapter({"generate_taxonomy": taxonomy_tool})
     state = PipelineState(
         run_dir=str(tmp_path),
-        config={"country": "Kazakhstan", "llm_batch_size": 2, "llm_batch_delay": 0.0},
+        config={
+            "country": "Kazakhstan",
+            "focus": "traditional culture",
+            "llm_batch_size": 2,
+            "llm_batch_delay": 0.0,
+        },
     )
 
     result = adapter.execute_generate_taxonomy(
@@ -100,6 +128,7 @@ def test_generate_taxonomy_adapter_flattens_queries(tmp_path: Path) -> None:
     assert result.artifacts["search_queries"] == ["kazakh food", "beshbarmak", "dombra music"]
     assert taxonomy_tool.calls[0]["args"][0] == "Kazakhstan"
     assert taxonomy_tool.calls[0]["args"][1]["batch_size"] == 2
+    assert taxonomy_tool.calls[0]["args"][1]["focus"] == "traditional culture"
 
 
 def test_generate_taxonomy_adapter_fails_when_taxonomy_quality_fails(tmp_path: Path) -> None:
@@ -391,7 +420,12 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
     state = PipelineState(
         run_dir=str(tmp_path),
-        config={"sft_mode": "image", "sft_target_language": "English", "sft_prompt_preset": "schema_strict"},
+        config={
+            "sft_mode": "image",
+            "sft_target_language": "English",
+            "sft_prompt_preset": "schema_strict",
+            "focus": "traditional culture",
+        },
         artifacts={"images_dir": str(images_dir), "images_index": str(images_index)},
     )
 
@@ -405,6 +439,7 @@ def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) 
     assert called_config["input_dir"] == str(images_dir)
     assert called_config["image_manifest"] == str(images_index)
     assert called_config["prompt_preset"] == "schema_strict"
+    assert called_config["focus"] == "traditional culture"
     assert called_config["image_tasks"] == ["caption"]
     assert "input_jsonl" not in called_config
     assert result.status == "success"
@@ -481,6 +516,7 @@ def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> No
             "source_eval_ratio": 0.5,
             "source_eval_max_items": 2,
             "seed": 7,
+            "focus": "traditional culture",
         },
         artifacts={"collected_texts_jsonl": str(collected_path)},
     )
@@ -489,6 +525,8 @@ def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> No
 
     assert result.status == "success"
     assert len(sft_tool.calls) == 2
+    assert sft_tool.calls[0]["focus"] == "traditional culture"
+    assert sft_tool.calls[1]["focus"] == "traditional culture"
     assert result.artifacts["heldout_eval_sft_path"].endswith("heldout_eval_sft.jsonl")
     assert Path(result.artifacts["heldout_eval_sft_path"]).exists()
     summary = result.artifacts["source_split_summary"]
@@ -966,6 +1004,7 @@ def test_eval_adapter_pushes_hf_adapter_after_eval_passes(monkeypatch, tmp_path:
             "hf_model_id": "test-model",
             "eval_enable_llm_judge": True,
             "hf_adapter_repo": "test-owner/test-adapter",
+            "focus": "traditional culture",
         },
         artifacts={
             "adapter_path": str(tmp_path / "adapter"),
@@ -978,6 +1017,7 @@ def test_eval_adapter_pushes_hf_adapter_after_eval_passes(monkeypatch, tmp_path:
     result = adapter.execute_evaluate_model(state, ActionRequest(ActionType.EVALUATE_MODEL))
 
     assert result.status == "success"
+    assert eval_tool.calls[0]["args"][2]["focus"] == "traditional culture"
     assert result.artifacts["adapter_repo_id"] == "test-owner/test-adapter"
     assert result.artifacts["hf_adapter_card_updated"] is True
     assert calls[0]["local_path"] == str(tmp_path / "adapter")

@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Horde Agent - LLM training pipeline")
 
     parser.add_argument("--country", type=str, default=None, help="Country or culture name (overrides .env COUNTRY)")
+    parser.add_argument("--focus", type=str, default=None, help="Optional explicit scope/focus within the country or culture")
     parser.add_argument("--data_path", type=str, default=None, help="Existing dataset path or HF repo ID (skips taxonomy & collection)")
     parser.add_argument("--out_dir", type=str, default=None, help="Output directory (overrides default run_dir)")
     parser.add_argument(
@@ -194,6 +195,8 @@ def main() -> None:
 
     if args.country:
         overrides["country"] = args.country
+    if args.focus:
+        overrides["focus"] = args.focus
     if args.data_path:
         overrides["data_path"] = args.data_path
     if args.out_dir:

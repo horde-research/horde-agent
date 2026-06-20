@@ -25,6 +25,7 @@ def run_llm_judge(
     *,
     modality: str,
     target_language: str = "",
+    focus: str = "",
     provider: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -32,13 +33,14 @@ def run_llm_judge(
     batch_size: int = 3,
     batch_delay: float = 1.0,
 ) -> Dict[str, Any]:
+    focus = str(focus or "").strip()
     rows = _read_predictions(predictions_path, max_samples=max_samples)
     out_path = Path(out_dir) / "judge_results.jsonl"
     summary_path = Path(out_dir) / "judge_summary.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not rows:
-        summary = _aggregate([], num_requested=0, judge_results_path=str(out_path))
+        summary = _aggregate([], num_requested=0, judge_results_path=str(out_path), focus=focus)
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         return summary
 
@@ -47,7 +49,7 @@ def run_llm_judge(
         LLMRequest(
             request_id=str(row.get("id", idx)),
             system_prompt=JUDGE_SYSTEM_PROMPT,
-            user_message=_judge_prompt(row, modality=modality, target_language=target_language),
+            user_message=_judge_prompt(row, modality=modality, target_language=target_language, focus=focus),
             images=[str(row["image_path"])] if modality == "image" and row.get("image_path") else None,
         )
         for idx, row in enumerate(rows)
@@ -84,7 +86,7 @@ def run_llm_judge(
             judged_rows.append(judged)
             handle.write(json.dumps(judged, ensure_ascii=False) + "\n")
 
-    summary = _aggregate(judged_rows, num_requested=len(rows), judge_results_path=str(out_path))
+    summary = _aggregate(judged_rows, num_requested=len(rows), judge_results_path=str(out_path), focus=focus)
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary
 
@@ -104,7 +106,7 @@ def _read_predictions(predictions_path: str, *, max_samples: int) -> list[dict[s
     return rows
 
 
-def _judge_prompt(row: dict[str, Any], *, modality: str, target_language: str) -> str:
+def _judge_prompt(row: dict[str, Any], *, modality: str, target_language: str, focus: str = "") -> str:
     image_line = (
         "The image is attached to this request. Judge visual grounding against the image.\n"
         if modality == "image"
@@ -122,6 +124,7 @@ Evaluate this validation answer.
 
 Modality: {modality}
 Target language: {target_language or "unspecified"}
+Scope/focus: {focus or "unspecified"}
 {image_line}
 Judge semantic usefulness, not string similarity.
 When a source excerpt is provided, treat it as the primary evidence for factual support.
@@ -129,6 +132,9 @@ The reference answer is the expected answer, but correct paraphrases are accepta
 Penalize answers that are factually wrong, contradict the reference, miss the core answer,
 hallucinate unsupported details, or fail the requested format.
 Do not penalize harmless wording differences or concise correct answers.
+If a scope/focus is provided, broader context is acceptable only when it directly
+supports that scope or is required by the user prompt, source excerpt, or reference.
+Mark materially off-scope answers as irrelevant.
 
 Rubric:
 - pass: The answer satisfies the user request and is materially consistent with the reference.
@@ -184,7 +190,13 @@ def _normalize_judgement(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_path: str) -> Dict[str, Any]:
+def _aggregate(
+    rows: list[dict[str, Any]],
+    *,
+    num_requested: int,
+    judge_results_path: str,
+    focus: str = "",
+) -> Dict[str, Any]:
     num_judged = len(rows)
     passes = sum(1 for row in rows if row.get("verdict") == "pass")
     minor = sum(1 for row in rows if row.get("verdict") == "minor_issue")
@@ -210,7 +222,7 @@ def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_
         gate_status = "warn"
     else:
         gate_status = "pass"
-    return {
+    summary = {
         "enabled": True,
         "passed": gate_status != "repair",
         "gate_status": gate_status,
@@ -232,6 +244,9 @@ def _aggregate(rows: list[dict[str, Any]], *, num_requested: int, judge_results_
         "unsupported_grounding_count": unsupported_grounding_count,
         "unsupported_grounding_rate": unsupported_grounding_rate,
     }
+    if focus:
+        summary["focus"] = focus
+    return summary
 
 
 def disabled_judge_summary(out_dir: str) -> Dict[str, Any]:

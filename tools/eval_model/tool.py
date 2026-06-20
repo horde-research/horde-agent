@@ -209,6 +209,7 @@ def _finalize_predictions(
             run_dir,
             modality=training_modality,
             target_language=str(config.get("target_language") or config.get("sft_target_language") or ""),
+            focus=str(config.get("focus") or ""),
             provider=config.get("llm_provider"),
             model=config.get("llm_model"),
             api_key=config.get("llm_api_key"),

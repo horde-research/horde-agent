@@ -63,12 +63,15 @@ class SubcategoryAgent:
         category_name: str,
         category_description: str,
         country_or_culture: str,
+        focus: str = "",
     ) -> str:
+        focus_line = f"Scope/focus: {focus}\n" if focus else ""
         return (
             f"Generate comprehensive subcategories for the following cultural category:\n\n"
             f"Category: {category_name}\n"
             f"Category Description: {category_description}\n"
             f"Country/Culture: {country_or_culture}\n\n"
+            f"{focus_line}"
             f"Create detailed, professional subcategories that are specific to the "
             f"cultural context, cover both traditional and contemporary elements, "
             f"and are well-described and actionable for data collection."
@@ -81,6 +84,7 @@ class SubcategoryAgent:
         *,
         batch_size: int = 5,
         batch_delay: float = 1.5,
+        focus: str = "",
     ) -> Dict[str, List[Dict[str, str]]]:
         """
         Generate subcategories for **all** categories in one batched call.
@@ -93,7 +97,7 @@ class SubcategoryAgent:
                 request_id=cat["name"],
                 system_prompt=SYSTEM_PROMPT,
                 user_message=self._build_user_message(
-                    cat["name"], cat.get("description", ""), country_or_culture,
+                    cat["name"], cat.get("description", ""), country_or_culture, focus,
                 ),
             )
             for cat in categories
@@ -123,11 +127,15 @@ class SubcategoryAgent:
         country_or_culture: str,
         quality_report: Dict[str, Any],
         culture_profile: Dict[str, Any],
+        *,
+        focus: str = "",
     ) -> List[Dict[str, str]]:
         category_name = category["name"]
+        focus_line = f"Scope/focus: {focus}\n" if focus else ""
         user_message = (
             "Repair the subcategory list for one cultural category.\n\n"
             f"Country/Culture: {country_or_culture}\n"
+            f"{focus_line}"
             f"Culture profile:\n{json.dumps(culture_profile, ensure_ascii=False, indent=2)}\n\n"
             f"Category:\n{json.dumps(category, ensure_ascii=False, indent=2)}\n\n"
             f"Existing subcategories:\n{json.dumps(existing_subcategories, ensure_ascii=False, indent=2)}\n\n"

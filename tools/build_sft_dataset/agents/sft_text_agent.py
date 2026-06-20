@@ -26,16 +26,22 @@ class TextAnnotationAgent:
         batch_size: int = 5,
         batch_delay: float = 1.0,
         prompt_preset: str = "default",
+        focus: str = "",
     ) -> None:
         self.client = client
         self.target_language = target_language
         self.batch_size = batch_size
         self.batch_delay = batch_delay
         self.prompt_preset = prompt_preset
+        self.focus = focus
 
         # Build prompt once — task instructions + Pydantic schema
         self._prompt = (
-            build_text_prompt(target_language=self.target_language, prompt_preset=self.prompt_preset)
+            build_text_prompt(
+                target_language=self.target_language,
+                prompt_preset=self.prompt_preset,
+                focus=self.focus,
+            )
             + format_instructions(TextAnnotation)
         )
 

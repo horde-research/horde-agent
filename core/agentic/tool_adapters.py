@@ -87,6 +87,7 @@ class AgenticToolAdapter:
                     "model": cfg.get("llm_model"),
                     "api_key": cfg.get("llm_api_key"),
                     "temperature": cfg.get("llm_temperature", 0.2),
+                    "focus": cfg.get("focus", ""),
                     "enable_image_taxonomy": cfg.get("enable_image_taxonomy", True),
                     "image_taxonomy_queries_per_slot": cfg.get("image_taxonomy_queries_per_slot", 4),
                     "image_taxonomy_max_slots": cfg.get("image_taxonomy_max_slots"),
@@ -331,6 +332,7 @@ class AgenticToolAdapter:
                 "model": cfg.get("llm_model"),
                 "api_key": cfg.get("llm_api_key"),
                 "prompt_preset": cfg.get("sft_prompt_preset", "default"),
+                "focus": cfg.get("focus", ""),
             }
             if mode == "image":
                 images_dir = state.artifacts.get("images_dir") or cfg.get("input_dir")
@@ -551,6 +553,7 @@ class AgenticToolAdapter:
                 "eval_judge_batch_size": cfg.get("eval_judge_batch_size", 3),
                 "eval_judge_batch_delay": cfg.get("eval_judge_batch_delay", 1.0),
                 "target_language": cfg.get("sft_target_language"),
+                "focus": cfg.get("focus", ""),
                 "llm_provider": cfg.get("llm_provider"),
                 "llm_model": cfg.get("llm_model"),
                 "llm_api_key": cfg.get("llm_api_key"),
@@ -896,6 +899,7 @@ def _text_annotation_cache_signature(config: Mapping[str, Any]) -> Dict[str, Any
         "schema_version": "text_annotation.v1",
         "target_language": config.get("sft_target_language", "English"),
         "prompt_preset": config.get("sft_prompt_preset", "default"),
+        "focus": config.get("focus", ""),
         "provider": config.get("llm_provider"),
         "model": config.get("llm_model"),
     }
@@ -1261,6 +1265,7 @@ def _build_dataset_card(
         _markdown_table(
             [
                 ("Country", state.config.get("country")),
+                ("Focus", state.config.get("focus")),
                 (
                     "Training modality",
                     artifacts.get("training_modality") or artifacts.get("sft_mode") or _training_modality(state.config),
@@ -1366,6 +1371,8 @@ def _build_adapter_card(
         _markdown_table(
             [
                 ("Base model", state.config.get("hf_model_id")),
+                ("Country", state.config.get("country")),
+                ("Focus", state.config.get("focus")),
                 ("Training modality", artifacts.get("training_modality") or _training_modality(state.config)),
                 ("Dataset repo", artifacts.get("dataset_repo_id")),
                 ("Max steps", state.config.get("max_steps")),
@@ -1453,6 +1460,13 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
     metadata = state.artifacts.get("collection_metadata") or {}
     eval_metrics = state.artifacts.get("eval_metrics") or {}
     return {
+        "run_summary": {
+            "country": state.config.get("country"),
+            "focus": state.config.get("focus"),
+            "training_modality": _training_modality(state.config),
+            "target_language": state.config.get("sft_target_language"),
+            "hf_model_id": state.config.get("hf_model_id"),
+        },
         "taxonomy_summary": _summarize_taxonomy(
             state.artifacts.get("taxonomy"),
             selected_queries=state.artifacts.get("search_queries"),

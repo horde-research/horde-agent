@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from datasets import Dataset, load_from_disk
@@ -57,6 +58,8 @@ def test_source_quality_oracle_policy_filters_domain_and_writes_dataset(tmp_path
         taxonomy={"categories": ["Kazakh yurt"], "category_subcategories": {"Kazakh yurt": ["shanyrak"]}},
         queries=["Kazakh yurt shanyrak"],
         config={
+            "country": "Kazakhstan",
+            "focus": "traditional culture",
             "source_quality_oracle_enable": True,
             "source_quality_min_quality_score": 0.10,
             "source_quality_accumulate_kept_sources": False,
@@ -69,6 +72,9 @@ def test_source_quality_oracle_policy_filters_domain_and_writes_dataset(tmp_path
     assert filtered[0]["source_url"] == "https://good.example/history/yurt"
     assert result["summary"]["oracle_used"] is True
     assert result["query_refinements"] == ["traditional yurt shanyrak primary source"]
+    oracle_payload = json.loads(Path(result["oracle_payload_path"]).read_text(encoding="utf-8"))
+    assert oracle_payload["target_entity"] == "Kazakhstan"
+    assert oracle_payload["focus"] == "traditional culture"
     assert Path(result["policy_path"]).exists()
     assert Path(result["decisions_path"]).exists()
 

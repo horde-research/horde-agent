@@ -98,6 +98,21 @@ def write_report(
 def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
 
+    run_summary = summary.get("run_summary") or {}
+    if run_summary:
+        lines.append("### Run\n")
+        if run_summary.get("country"):
+            lines.append(f"- Country/culture: {run_summary['country']}")
+        if run_summary.get("focus"):
+            lines.append(f"- Scope/focus: {run_summary['focus']}")
+        if run_summary.get("training_modality"):
+            lines.append(f"- Training modality: {run_summary['training_modality']}")
+        if run_summary.get("target_language"):
+            lines.append(f"- Target language: {run_summary['target_language']}")
+        if run_summary.get("hf_model_id"):
+            lines.append(f"- Base model: `{run_summary['hf_model_id']}`")
+        lines.append("")
+
     taxonomy = summary.get("taxonomy_summary") or {}
     if taxonomy:
         lines.append("### Taxonomy\n")
