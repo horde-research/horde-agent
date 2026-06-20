@@ -183,6 +183,106 @@ def validate_collection_output(
     )
 
 
+def validate_source_quality_output(
+    output: Dict[str, Any],
+    *,
+    min_kept_rows: int = 20,
+    min_source_groups: int = 5,
+    max_domain_share: float = 0.75,
+    min_avg_quality_score: float = 0.20,
+) -> QualityReport:
+    if output.get("skipped"):
+        return QualityReport(
+            stage=ActionType.ASSESS_SOURCE_QUALITY,
+            passed=True,
+            gate_status="pass",
+            decision="continue",
+            score=1.0,
+            recoverable=True,
+            metrics={"skipped": True, "reason": output.get("reason")},
+            warnings=[],
+        )
+
+    summary = output.get("summary") if isinstance(output.get("summary"), dict) else {}
+    num_input = _safe_int(output.get("num_input_rows") or summary.get("num_input_rows"))
+    num_kept = _safe_int(output.get("num_kept_rows") or summary.get("num_kept_rows"))
+    num_removed = _safe_int(output.get("num_removed_rows") or summary.get("num_removed_rows"))
+    num_groups = _safe_int(summary.get("num_kept_source_groups"))
+    num_domains = _safe_int(summary.get("num_kept_domains"))
+    top_domain_share = _safe_float(summary.get("top_domain_share"))
+    avg_quality = _safe_float(summary.get("avg_kept_quality_score"))
+    removal_rate = _safe_float(summary.get("removal_rate"))
+    oracle_warning = str(summary.get("oracle_warning") or "").strip()
+
+    blocking_issues: List[str] = []
+    warnings: List[str] = []
+    recommended_actions: List[str] = []
+    suggested_adjustments: Dict[str, Any] = {}
+
+    if num_input <= 0:
+        blocking_issues.append("source_quality_input_empty")
+        recommended_actions.append("increase_collection_coverage")
+    if num_kept <= 0:
+        blocking_issues.append("source_quality_removed_all_rows")
+        recommended_actions.append("collect_more_candidate_sources")
+    elif num_kept < max(1, min_kept_rows):
+        blocking_issues.append("source_quality_kept_rows_below_minimum")
+        recommended_actions.append("collect_more_candidate_sources")
+    if num_kept > 0 and not _path_exists(output.get("filtered_data_path") or output.get("data_path")):
+        blocking_issues.append("source_quality_filtered_data_path_missing")
+    if num_kept > 1 and num_groups and num_groups < max(1, min_source_groups):
+        blocking_issues.append("source_quality_source_groups_below_minimum")
+        recommended_actions.append("diversify_source_collection")
+    if num_kept > 0 and top_domain_share > max_domain_share:
+        blocking_issues.append("source_quality_domain_concentration_too_high")
+        recommended_actions.append("diversify_source_collection")
+    if num_kept > 0 and avg_quality < min_avg_quality_score:
+        blocking_issues.append("source_quality_average_score_too_low")
+        recommended_actions.append("refine_source_quality_policy")
+    if oracle_warning:
+        warnings.append("source_quality_oracle_unavailable")
+    if num_input > 0 and removal_rate > 0.80 and num_kept < min_kept_rows * 2:
+        warnings.append("source_quality_removed_many_rows")
+
+    if blocking_issues:
+        suggested_adjustments.update(
+            {
+                "serper_results_per_query": "increase",
+                "serper_top_results": "increase",
+                "coverage_added_queries": "use_source_quality_query_refinements",
+            }
+        )
+        query_refinements = output.get("query_refinements")
+        if isinstance(query_refinements, list) and query_refinements:
+            suggested_adjustments["source_quality_query_refinements"] = query_refinements[:10]
+
+    gate = _gate_status(blocking_issues, warnings)
+    return QualityReport(
+        stage=ActionType.ASSESS_SOURCE_QUALITY,
+        passed=not blocking_issues,
+        gate_status=gate,
+        decision=_decision_from_gate_status(gate),
+        score=1.0 if not blocking_issues else 0.0,
+        recoverable=True,
+        issue_categories=_issue_categories(blocking_issues, warnings),
+        blocking_issues=blocking_issues,
+        warnings=warnings,
+        metrics={
+            "num_input_rows": num_input,
+            "num_kept_rows": num_kept,
+            "num_removed_rows": num_removed,
+            "num_kept_source_groups": num_groups,
+            "num_kept_domains": num_domains,
+            "top_domain_share": top_domain_share,
+            "avg_kept_quality_score": avg_quality,
+            "removal_rate": removal_rate,
+            "oracle_used": bool(summary.get("oracle_used")),
+        },
+        recommended_actions=recommended_actions,
+        suggested_adjustments=suggested_adjustments,
+    )
+
+
 def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
     num_examples = int(output.get("num_examples") or 0)
     num_failures = int(output.get("num_failures") or 0)
@@ -647,7 +747,9 @@ def _decision_from_gate_status(gate_status: str) -> str:
 def _issue_categories(blocking_issues: List[str], warnings: List[str]) -> List[str]:
     categories: set[str] = set()
     for issue in [*blocking_issues, *warnings]:
-        if "alias" in issue or "language" in issue:
+        if "source_quality" in issue:
+            categories.add("source_quality")
+        elif "alias" in issue or "language" in issue:
             categories.add("culture_specificity")
         elif "duplicate" in issue:
             categories.add("duplicates")

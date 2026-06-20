@@ -48,6 +48,8 @@ def build_recovery_plan(state: PipelineState, result: ActionResult) -> RecoveryP
         return _collection_plan(state, issues, result)
     if result.action_type == ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES:
         return _coverage_plan(state, issues, result)
+    if result.action_type == ActionType.ASSESS_SOURCE_QUALITY:
+        return _source_quality_plan(state, issues, result)
     if result.action_type == ActionType.BUILD_SFT_DATASET:
         return _sft_plan(state, issues)
     if result.action_type == ActionType.BUILD_DATASET:
@@ -135,6 +137,37 @@ def _coverage_plan(state: PipelineState, issues: set[str], result: ActionResult)
     return RecoveryPlan(
         target_stage=ActionType.COLLECT_DATA,
         reason="recovery_refine_collection_queries",
+        config_delta=delta,
+    )
+
+
+def _source_quality_plan(state: PipelineState, issues: set[str], result: ActionResult) -> RecoveryPlan:
+    raw = result.raw_output if isinstance(result.raw_output, dict) else {}
+    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
+    query_refinements = _merge_list_cfg(
+        state.config.get("coverage_added_queries"),
+        raw.get("query_refinements") or result.artifacts.get("source_quality_query_refinements"),
+    )
+    delta = _expand_text_collection_delta(state)
+    if query_refinements:
+        delta["coverage_added_queries"] = query_refinements
+    if issues & {
+        "source_quality_removed_all_rows",
+        "source_quality_average_score_too_low",
+    }:
+        delta["source_quality_min_quality_score"] = max(
+            0.05,
+            _float_cfg(state, "source_quality_min_quality_score", 0.20) - 0.05,
+        )
+        delta["source_quality_keep_borderline"] = True
+    if issues & {"source_quality_domain_concentration_too_high", "source_quality_source_groups_below_minimum"}:
+        delta["serper_results_per_query"] = min(_int_cfg(state, "serper_results_per_query", 10) + 8, 40)
+        delta["serper_top_results"] = min(_int_cfg(state, "serper_top_results", 5) + 3, 15)
+    if _float_value(summary.get("removal_rate"), 0.0) > 0.80:
+        delta["source_quality_keep_borderline"] = True
+    return RecoveryPlan(
+        target_stage=ActionType.COLLECT_DATA,
+        reason="recovery_source_quality_collect_more",
         config_delta=delta,
     )
 
@@ -316,6 +349,10 @@ def _recovery_key_metrics(result: ActionResult) -> Dict[str, Any]:
         _copy_metric(metrics, source, "text_filter_kept")
         _copy_metric(metrics, source, "text_filter_removed")
         _copy_metric(metrics, source, "text_filter_removal_rate")
+        _copy_metric(metrics, source, "num_kept_rows", target_key="source_quality_kept")
+        _copy_metric(metrics, source, "num_removed_rows", target_key="source_quality_removed")
+        _copy_metric(metrics, source, "top_domain_share", target_key="source_quality_top_domain_share")
+        _copy_metric(metrics, source, "avg_kept_quality_score", target_key="source_quality_avg_score")
         judge = source.get("judge_summary") or source.get("judge")
         if isinstance(judge, dict):
             _copy_metric(metrics, judge, "quality_score", target_key="judge_quality_score")
@@ -326,6 +363,12 @@ def _recovery_key_metrics(result: ActionResult) -> Dict[str, Any]:
             _copy_metric(metrics, text_filter, "num_kept", target_key="text_filter_kept")
             _copy_metric(metrics, text_filter, "num_removed", target_key="text_filter_removed")
             _copy_metric(metrics, text_filter, "removal_rate", target_key="text_filter_removal_rate")
+        source_quality = source.get("source_quality_summary") or source.get("summary")
+        if isinstance(source_quality, dict):
+            _copy_metric(metrics, source_quality, "num_kept_rows", target_key="source_quality_kept")
+            _copy_metric(metrics, source_quality, "num_removed_rows", target_key="source_quality_removed")
+            _copy_metric(metrics, source_quality, "top_domain_share", target_key="source_quality_top_domain_share")
+            _copy_metric(metrics, source_quality, "avg_kept_quality_score", target_key="source_quality_avg_score")
     return _normalize_value(metrics)
 
 

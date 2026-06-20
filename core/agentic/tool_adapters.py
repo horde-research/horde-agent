@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict
 from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
 from core.agentic.coverage import assess_coverage_and_refine_queries
 from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
+from core.data.source_quality import assess_text_source_quality
 from core.data.text_quality import (
     DEFAULT_EMBEDDING_MODEL,
     records_from_serper_raw,
@@ -29,6 +30,7 @@ from core.agentic.validators import (
     validate_dataset_output,
     validate_eval_output,
     validate_report_output,
+    validate_source_quality_output,
     validate_sft_output,
     validate_taxonomy_output,
     validate_training_output,
@@ -50,6 +52,7 @@ class AgenticToolAdapter:
             ActionType.GENERATE_TAXONOMY: self.execute_generate_taxonomy,
             ActionType.COLLECT_DATA: self.execute_collect_data,
             ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES: self.execute_assess_coverage_and_refine_queries,
+            ActionType.ASSESS_SOURCE_QUALITY: self.execute_assess_source_quality,
             ActionType.BUILD_SFT_DATASET: self.execute_build_sft_dataset,
             ActionType.BUILD_DATASET: self.execute_build_dataset,
             ActionType.TRAIN_MODEL: self.execute_train_model,
@@ -221,6 +224,95 @@ class AgenticToolAdapter:
             )
         except Exception as exc:
             return _failed_result(ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES, exc)
+
+    def execute_assess_source_quality(self, state: PipelineState, request: ActionRequest) -> ActionResult:
+        try:
+            cfg = state.config
+            if _training_modality(cfg) != "text":
+                output = {
+                    "skipped": True,
+                    "enabled": False,
+                    "reason": "source_quality_text_only",
+                    "data_path": state.artifacts.get("data_path") or cfg.get("data_path"),
+                }
+                report = validate_source_quality_output(output)
+                return ActionResult(
+                    action_type=ActionType.ASSESS_SOURCE_QUALITY,
+                    status=_status_from_report(report),
+                    artifacts={
+                        "source_quality_enabled": False,
+                        "data_path": output.get("data_path"),
+                        "source_quality_summary": {"skipped": True, "reason": output["reason"]},
+                    },
+                    metrics=report.metrics,
+                    quality_report=report,
+                    raw_output=output,
+                )
+            if not _as_bool(cfg.get("source_quality_enable", True)):
+                output = {
+                    "skipped": True,
+                    "enabled": False,
+                    "reason": "source_quality_disabled",
+                    "data_path": state.artifacts.get("data_path") or cfg.get("data_path"),
+                }
+                report = validate_source_quality_output(output)
+                return ActionResult(
+                    action_type=ActionType.ASSESS_SOURCE_QUALITY,
+                    status=_status_from_report(report),
+                    artifacts={
+                        "source_quality_enabled": False,
+                        "data_path": output.get("data_path"),
+                        "source_quality_summary": {"skipped": True, "reason": output["reason"]},
+                    },
+                    metrics=report.metrics,
+                    quality_report=report,
+                    raw_output=output,
+                )
+
+            data_path = state.artifacts.get("raw_data_path") or state.artifacts.get("data_path") or cfg.get("data_path")
+            if not data_path:
+                raise ValueError("data_path artifact is required for source quality assessment.")
+            output = assess_text_source_quality(
+                data_path=str(data_path),
+                output_dir=Path(state.run_dir) / "source_quality",
+                taxonomy=state.artifacts.get("taxonomy") or cfg.get("taxonomy") or {},
+                queries=state.artifacts.get("search_queries") or cfg.get("queries") or [],
+                config=cfg,
+            )
+            report = validate_source_quality_output(
+                output,
+                min_kept_rows=_int_value(cfg.get("source_quality_min_kept_rows"), 20),
+                min_source_groups=_int_value(cfg.get("source_quality_min_source_groups"), 5),
+                max_domain_share=_float_value(cfg.get("source_quality_max_domain_share"), 0.75),
+                min_avg_quality_score=_float_value(cfg.get("source_quality_min_avg_score"), 0.20),
+            )
+            artifacts = {
+                "source_quality_enabled": True,
+                "source_quality_input_data_path": output.get("input_data_path"),
+                "source_quality_filtered_data_path": output.get("filtered_data_path"),
+                "source_quality_profile_path": output.get("profile_path"),
+                "source_quality_clusters_path": output.get("clusters_path"),
+                "source_quality_oracle_payload_path": output.get("oracle_payload_path"),
+                "source_quality_policy_path": output.get("policy_path"),
+                "source_quality_report_path": output.get("report_path"),
+                "source_quality_decisions_path": output.get("decisions_path"),
+                "source_quality_accepted_sources_path": output.get("accepted_sources_path"),
+                "source_quality_summary": output.get("summary"),
+                "source_quality_oracle": output.get("oracle"),
+                "source_quality_query_refinements": output.get("query_refinements"),
+            }
+            if report.passed and output.get("filtered_data_path"):
+                artifacts["data_path"] = output.get("filtered_data_path")
+            return ActionResult(
+                action_type=ActionType.ASSESS_SOURCE_QUALITY,
+                status=_status_from_report(report),
+                artifacts=artifacts,
+                metrics=report.metrics,
+                quality_report=report,
+                raw_output=output,
+            )
+        except Exception as exc:
+            return _failed_result(ActionType.ASSESS_SOURCE_QUALITY, exc)
 
     def execute_build_sft_dataset(self, state: PipelineState, request: ActionRequest) -> ActionResult:
         try:

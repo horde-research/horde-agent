@@ -217,6 +217,7 @@ def test_full_agentic_workflow_runs_known_graph_with_image_collection(tmp_path: 
         "generate_taxonomy",
         "collect_data",
         "assess_coverage_and_refine_queries",
+        "assess_source_quality",
         "build_sft_dataset",
         "build_dataset",
         "train_model",

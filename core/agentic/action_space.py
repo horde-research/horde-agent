@@ -10,6 +10,7 @@ class ActionType(str, Enum):
     GENERATE_TAXONOMY = "generate_taxonomy"
     COLLECT_DATA = "collect_data"
     ASSESS_COVERAGE_AND_REFINE_QUERIES = "assess_coverage_and_refine_queries"
+    ASSESS_SOURCE_QUALITY = "assess_source_quality"
     BUILD_SFT_DATASET = "build_sft_dataset"
     BUILD_DATASET = "build_dataset"
     TRAIN_MODEL = "train_model"
@@ -23,6 +24,7 @@ FULL_GRAPH_ACTIONS: List[ActionType] = [
     ActionType.GENERATE_TAXONOMY,
     ActionType.COLLECT_DATA,
     ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES,
+    ActionType.ASSESS_SOURCE_QUALITY,
     ActionType.BUILD_SFT_DATASET,
     ActionType.BUILD_DATASET,
     ActionType.TRAIN_MODEL,

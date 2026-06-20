@@ -68,6 +68,7 @@ def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | No
 
 _AGENTIC_STAGE_PATHS: dict[ActionType, tuple[str, ...]] = {
     ActionType.COLLECT_DATA: ("collect",),
+    ActionType.ASSESS_SOURCE_QUALITY: ("source_quality",),
     ActionType.BUILD_SFT_DATASET: ("sft",),
     ActionType.BUILD_DATASET: ("dataset", "dataset_manifest.json"),
     ActionType.TRAIN_MODEL: ("iterations", "iterations.json", "debug_stub"),

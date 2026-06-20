@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from datasets import Dataset, load_from_disk
 
 from config import PipelineConfig
 from core.agentic.action_space import ActionType
@@ -295,6 +296,55 @@ def test_assess_coverage_does_not_emit_repair_queries_when_passing(tmp_path: Pat
     assert result.artifacts["coverage_added_queries"] == []
     assert result.artifacts["coverage_review"]["added_queries"] == []
     assert result.artifacts["coverage_review"]["candidate_text_queries"] == []
+
+
+def test_assess_source_quality_filters_text_dataset_and_updates_data_path(tmp_path: Path) -> None:
+    raw_dataset_dir = tmp_path / "collect" / "dataset"
+    Dataset.from_list(
+        [
+            {
+                "text": "Kazakh yurt construction uses a shanyrak crown, kerege lattice walls, and felt cover.",
+                "source_url": "https://good.example/yurt",
+                "source_query": "Kazakh yurt shanyrak",
+                "group_key": "good",
+            },
+            {
+                "text": "Menu Login Privacy Search Tags Categories Subscribe Copyright",
+                "source_url": "https://bad.example/search?q=yurt",
+                "source_query": "Kazakh yurt shanyrak",
+                "group_key": "bad",
+            },
+        ]
+    ).save_to_disk(str(raw_dataset_dir))
+    adapter = AgenticToolAdapter({})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "training_modality": "text",
+            "source_quality_oracle_enable": False,
+            "source_quality_min_kept_rows": 1,
+            "source_quality_min_source_groups": 1,
+            "source_quality_max_domain_share": 1.0,
+            "source_quality_min_avg_score": 0.0,
+            "source_quality_min_quality_score": 0.10,
+            "source_quality_accumulate_kept_sources": False,
+        },
+        artifacts={
+            "raw_data_path": str(raw_dataset_dir),
+            "taxonomy": {"categories": ["Kazakh yurt"]},
+            "search_queries": ["Kazakh yurt shanyrak"],
+        },
+    )
+
+    result = adapter.execute_assess_source_quality(state, ActionRequest(ActionType.ASSESS_SOURCE_QUALITY))
+
+    assert result.status == "success"
+    assert result.quality_report and result.quality_report.passed
+    assert result.artifacts["data_path"] == result.artifacts["source_quality_filtered_data_path"]
+    filtered = load_from_disk(result.artifacts["data_path"])
+    assert len(filtered) == 1
+    assert filtered[0]["group_key"] == "good"
+    assert Path(result.artifacts["source_quality_report_path"]).exists()
 
 
 def test_build_sft_adapter_uses_collected_images_for_image_mode(tmp_path: Path) -> None:

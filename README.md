@@ -6,13 +6,14 @@ The main v1 path is `full_agentic`. It is not an open-ended autonomous agent. It
 
 ## Current Flow
 
-`generate_taxonomy -> collect_data -> assess_coverage_and_refine_queries -> build_sft_dataset -> build_dataset -> train_model -> evaluate_model -> generate_report`
+`generate_taxonomy -> collect_data -> assess_coverage_and_refine_queries -> assess_source_quality -> build_sft_dataset -> build_dataset -> train_model -> evaluate_model -> generate_report`
 
 The stages do the following:
 
 - `generate_taxonomy`: builds culture/domain categories, subcategories, text search queries, and optional language-agnostic image taxonomy slots.
 - `collect_data`: uses Serper text search and, when enabled, Serper Google Images to collect raw text and image data.
 - `assess_coverage_and_refine_queries`: checks whether collected text/images cover enough queries and image taxonomy slots; if not, it routes back to collection with refined text queries or targeted image query specs.
+- `assess_source_quality`: for text runs, profiles and clusters candidate source rows, optionally asks an LLM oracle for cluster/domain filtering policy, applies deterministic filtering, accumulates accepted rows across recovery attempts, and blocks SFT until the post-filter corpus is sufficient.
 - `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM and validates row schema/content before training.
 - `build_dataset`: builds a Hugging Face dataset with `train` and `validation` splits; when `HF_DATASET_REPO` is configured, the split dataset is pushed to Hugging Face Hub after this stage passes.
 - `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled.
@@ -23,6 +24,7 @@ Agentic behavior currently happens in bounded places:
 
 - Taxonomy mini-loop: failed category, subcategory, or query quality gates trigger targeted LLM repair calls before collection.
 - Coverage mini-loop: weak collection coverage can trigger new text queries or image query specs and rerun collection.
+- Source-quality mini-loop: weak post-filter text sources trigger query refinement and more collection before SFT/training.
 - Recovery planner: failed quality reports choose a legal upstream stage and bounded config deltas instead of blindly continuing.
 - Evaluation feedback: eval failures can request more collection coverage, stricter SFT prompts, or training stabilization.
 - Resume controller: existing completed stages require confirmation or explicit CLI flags before reuse.
@@ -258,6 +260,31 @@ TEXT_FILTER_SHINGLE_THRESHOLD=0.90
 ```
 
 The filter writes `collect/text_filter_report.json`. If every real page is filtered out, the recovery policy expands collection and relaxes length thresholds instead of silently training on the placeholder row.
+
+## Source Quality Gate
+
+For text `full_agentic` runs, collected rows are candidates until `assess_source_quality` passes. The stage writes:
+
+- `source_quality/source_quality_profile.json`: per-row deterministic features.
+- `source_quality/source_quality_clusters.jsonl`: compact domain/path/relevance cluster summaries.
+- `source_quality/source_quality_oracle_payload.json`: the aggregate-only payload sent to the oracle.
+- `source_quality/source_quality_policy.json`: deterministic plus optional oracle policy.
+- `source_quality/source_quality_decisions.jsonl`: per-row keep/drop decisions and reasons.
+- `source_quality/accepted_sources.jsonl`: accumulated accepted rows across collection recovery attempts.
+- `source_quality/dataset`: the training-eligible filtered dataset used by SFT.
+
+Useful knobs:
+
+```bash
+SOURCE_QUALITY_ENABLE=true
+SOURCE_QUALITY_ORACLE_ENABLE=true
+SOURCE_QUALITY_MIN_KEPT_ROWS=20
+SOURCE_QUALITY_MIN_SOURCE_GROUPS=5
+SOURCE_QUALITY_MAX_DOMAIN_SHARE=0.75
+SOURCE_QUALITY_MIN_AVG_SCORE=0.20
+```
+
+If the oracle is unavailable, the stage records a warning and falls back to deterministic policy. If filtering leaves too few rows, too few source groups, excessive domain concentration, or low average source quality, recovery routes back to collection with more candidates and oracle-suggested query refinements instead of proceeding to SFT.
 
 ## Text Quality Diagnostics
 

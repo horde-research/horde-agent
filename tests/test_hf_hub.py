@@ -6,6 +6,7 @@ from core.hf_hub import push_dataset
 
 
 def test_push_dataset_preserves_datasetdict_splits(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
     dataset_path = tmp_path / "dataset"
     DatasetDict(
         {

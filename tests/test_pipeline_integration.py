@@ -262,15 +262,17 @@ def _make_fake_eval_result(run_dir: str) -> Dict[str, Any]:
             }, ensure_ascii=False) + "\n")
 
     with open(failures_path, "w") as f:
-        f.write(json.dumps({"id": 2, "reason": "mismatch"}, ensure_ascii=False) + "\n")
+        f.write("")
 
     return {
         "predictions_path": predictions_path,
         "failures_path": failures_path,
-        "cluster_preview": {
-            "clusters": [
-                {"label": "formatting", "count": 1, "examples": ["mismatch on id 2"]},
-            ]
+        "cluster_preview": {"clusters": []},
+        "metrics": {
+            "num_predictions": 5,
+            "num_failures": 0,
+            "failure_rate": 0.0,
+            "failure_reason_counts": {},
         },
     }
 

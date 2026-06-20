@@ -87,6 +87,18 @@ class PipelineConfig(BaseModel):
     text_filter_shingle_threshold: float = 0.90
     text_filter_max_near_duplicate_items: int = 1000
     text_filter_max_reported_rows: int = 50
+    source_quality_enable: bool = True
+    source_quality_oracle_enable: bool = True
+    source_quality_min_kept_rows: int = 20
+    source_quality_min_source_groups: int = 5
+    source_quality_max_domain_share: float = 0.75
+    source_quality_min_avg_score: float = 0.20
+    source_quality_min_quality_score: float = 0.20
+    source_quality_keep_borderline: bool = True
+    source_quality_accumulate_kept_sources: bool = True
+    source_quality_max_clusters: int = 40
+    source_quality_oracle_max_clusters: int = 30
+    source_quality_exemplars_per_cluster: int = 3
 
     # ── SFT annotation ───────────────────────────────────────────────────────
     # Primary modality switch for examples that flow into dataset/train.
@@ -203,6 +215,18 @@ class PipelineConfig(BaseModel):
             "text_filter_shingle_threshold": os.getenv("TEXT_FILTER_SHINGLE_THRESHOLD"),
             "text_filter_max_near_duplicate_items": os.getenv("TEXT_FILTER_MAX_NEAR_DUPLICATE_ITEMS"),
             "text_filter_max_reported_rows": os.getenv("TEXT_FILTER_MAX_REPORTED_ROWS"),
+            "source_quality_enable": os.getenv("SOURCE_QUALITY_ENABLE"),
+            "source_quality_oracle_enable": os.getenv("SOURCE_QUALITY_ORACLE_ENABLE"),
+            "source_quality_min_kept_rows": os.getenv("SOURCE_QUALITY_MIN_KEPT_ROWS"),
+            "source_quality_min_source_groups": os.getenv("SOURCE_QUALITY_MIN_SOURCE_GROUPS"),
+            "source_quality_max_domain_share": os.getenv("SOURCE_QUALITY_MAX_DOMAIN_SHARE"),
+            "source_quality_min_avg_score": os.getenv("SOURCE_QUALITY_MIN_AVG_SCORE"),
+            "source_quality_min_quality_score": os.getenv("SOURCE_QUALITY_MIN_QUALITY_SCORE"),
+            "source_quality_keep_borderline": os.getenv("SOURCE_QUALITY_KEEP_BORDERLINE"),
+            "source_quality_accumulate_kept_sources": os.getenv("SOURCE_QUALITY_ACCUMULATE_KEPT_SOURCES"),
+            "source_quality_max_clusters": os.getenv("SOURCE_QUALITY_MAX_CLUSTERS"),
+            "source_quality_oracle_max_clusters": os.getenv("SOURCE_QUALITY_ORACLE_MAX_CLUSTERS"),
+            "source_quality_exemplars_per_cluster": os.getenv("SOURCE_QUALITY_EXEMPLARS_PER_CLUSTER"),
             "training_modality": os.getenv("TRAINING_MODALITY"),
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
@@ -303,6 +327,22 @@ class PipelineConfig(BaseModel):
             raise ValueError("text_filter_max_near_duplicate_items must be >= 0.")
         if int(self.text_filter_max_reported_rows) < 0:
             raise ValueError("text_filter_max_reported_rows must be >= 0.")
+        if int(self.source_quality_min_kept_rows) < 0:
+            raise ValueError("source_quality_min_kept_rows must be >= 0.")
+        if int(self.source_quality_min_source_groups) < 0:
+            raise ValueError("source_quality_min_source_groups must be >= 0.")
+        if not 0.0 <= float(self.source_quality_max_domain_share) <= 1.0:
+            raise ValueError("source_quality_max_domain_share must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.source_quality_min_avg_score) <= 1.0:
+            raise ValueError("source_quality_min_avg_score must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.source_quality_min_quality_score) <= 1.0:
+            raise ValueError("source_quality_min_quality_score must be between 0.0 and 1.0.")
+        if int(self.source_quality_max_clusters) < 1:
+            raise ValueError("source_quality_max_clusters must be >= 1.")
+        if int(self.source_quality_oracle_max_clusters) < 1:
+            raise ValueError("source_quality_oracle_max_clusters must be >= 1.")
+        if int(self.source_quality_exemplars_per_cluster) < 1:
+            raise ValueError("source_quality_exemplars_per_cluster must be >= 1.")
         if not 0.0 <= float(self.source_eval_ratio) <= 0.5:
             raise ValueError("source_eval_ratio must be between 0.0 and 0.5.")
         if int(self.source_eval_max_items) < 0:

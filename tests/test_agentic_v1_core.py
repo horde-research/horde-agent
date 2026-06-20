@@ -105,6 +105,25 @@ def test_policy_runs_coverage_assessment_after_collection_passes(tmp_path: Path)
     assert action.stage == ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES
 
 
+def test_policy_runs_source_quality_after_coverage_passes(tmp_path: Path) -> None:
+    state = PipelineState(run_dir=str(tmp_path))
+    for stage in (
+        ActionType.GENERATE_TAXONOMY,
+        ActionType.COLLECT_DATA,
+        ActionType.ASSESS_COVERAGE_AND_REFINE_QUERIES,
+    ):
+        state.mark_stage_complete(
+            stage,
+            quality_report=_passing_report(stage),
+            artifacts={stage.value: f"{stage.value}.artifact"},
+        )
+
+    action = choose_next_action(state)
+
+    assert action.action_type == ActionType.ASSESS_SOURCE_QUALITY
+    assert action.stage == ActionType.ASSESS_SOURCE_QUALITY
+
+
 def test_policy_retries_recoverable_failed_stage_before_advancing(tmp_path: Path) -> None:
     state = PipelineState(run_dir=str(tmp_path), max_stage_retries=2)
     state.last_action_result = ActionResult(
@@ -187,6 +206,35 @@ def test_policy_routes_failed_coverage_assessment_back_to_collection(tmp_path: P
     assert action.reason == "recovery_refine_collection_queries"
     assert action.config_delta["coverage_added_queries"] == ["Kazakhstan kazakh food culture source"]
     assert action.config_delta["serper_results_per_query"] == 13
+
+
+def test_policy_routes_source_quality_failure_back_to_collection(tmp_path: Path) -> None:
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"serper_results_per_query": 10, "serper_top_results": 5},
+    )
+    state.last_action_result = ActionResult(
+        action_type=ActionType.ASSESS_SOURCE_QUALITY,
+        status="failed",
+        artifacts={"source_quality_query_refinements": ["specific primary source query"]},
+        raw_output={
+            "query_refinements": ["specific primary source query"],
+            "summary": {"num_kept_rows": 3, "num_removed_rows": 97, "removal_rate": 0.97},
+        },
+        quality_report=QualityReport(
+            stage=ActionType.ASSESS_SOURCE_QUALITY,
+            passed=False,
+            recoverable=True,
+            blocking_issues=["source_quality_kept_rows_below_minimum"],
+        ),
+    )
+
+    action = choose_next_action(state)
+
+    assert action.action_type == ActionType.COLLECT_DATA
+    assert action.reason == "recovery_source_quality_collect_more"
+    assert action.config_delta["coverage_added_queries"] == ["specific primary source query"]
+    assert action.config_delta["serper_results_per_query"] == 15
 
 
 def test_policy_routes_eval_knowledge_failure_back_to_collection(tmp_path: Path) -> None:
