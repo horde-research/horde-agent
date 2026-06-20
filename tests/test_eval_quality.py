@@ -253,6 +253,89 @@ def test_eval_validator_flags_unsupported_grounding(tmp_path: Path) -> None:
     assert report.metrics["judge_unsupported_grounding_rate"] == 0.5
 
 
+def test_eval_validator_blocks_semantic_mismatch_rate_without_judge(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text("{}", encoding="utf-8")
+    failures_path.write_text("{}", encoding="utf-8")
+
+    report = validate_eval_output(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": [{"label": "semantic_mismatch", "count": 6}]},
+            "metrics": {
+                "failure_rate": 0.30,
+                "num_predictions": 20,
+                "training_health": {"gate_status": "pass"},
+                "judge": {"enabled": False},
+            },
+        }
+    )
+
+    assert not report.passed
+    assert "eval_semantic_mismatch_rate_too_high" in report.blocking_issues
+    assert report.metrics["semantic_mismatch_rate"] == 0.3
+
+
+def test_eval_validator_blocks_missing_training_metrics(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text("{}", encoding="utf-8")
+    failures_path.write_text("", encoding="utf-8")
+
+    report = validate_eval_output(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": []},
+            "metrics": {
+                "failure_rate": 0.0,
+                "training_health": {
+                    "gate_status": "warn",
+                    "warnings": ["training_metrics_missing", "training_loss_missing"],
+                },
+                "judge": {"enabled": False},
+            },
+        }
+    )
+
+    assert not report.passed
+    assert "eval_training_metrics_missing" in report.blocking_issues
+
+
+def test_eval_validator_blocks_insufficient_judge_grounding(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text("{}", encoding="utf-8")
+    failures_path.write_text("", encoding="utf-8")
+
+    report = validate_eval_output(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": []},
+            "metrics": {
+                "failure_rate": 0.0,
+                "training_health": {"gate_status": "pass"},
+                "judge": {
+                    "enabled": True,
+                    "gate_status": "pass",
+                    "major_failure_rate": 0.0,
+                    "unsupported_grounding_rate": 0.0,
+                    "grounding_counts": {"supported": 1, "insufficient_source": 3},
+                    "num_judged": 4,
+                    "failure_category_counts": {},
+                },
+            },
+        }
+    )
+
+    assert not report.passed
+    assert "eval_grounding_insufficient_source" in report.blocking_issues
+    assert report.metrics["judge_insufficient_grounding_rate"] == 0.75
+
+
 def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp_path: Path) -> None:
     test_dataset = tmp_path / "text_sft.jsonl"
     adapter_dir = tmp_path / "adapter"

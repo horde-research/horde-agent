@@ -421,6 +421,13 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
     judge = metrics_payload.get("judge") if isinstance(metrics_payload, dict) else {}
     judge_enabled = isinstance(judge, dict) and bool(judge.get("enabled"))
     failure_rate = _failure_rate(output)
+    cluster_counts = _cluster_counts(output.get("cluster_preview"))
+    semantic_mismatch_rate = _cluster_rate(
+        cluster_counts,
+        "semantic_mismatch",
+        metrics_payload if isinstance(metrics_payload, dict) else {},
+        failure_rate,
+    )
     if not judge_enabled and failure_rate is not None and failure_rate > 0.5:
         blocking_issues.append("eval_failure_rate_too_high")
         recommended_actions.append("route_to_upstream_recovery")
@@ -428,6 +435,14 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
     if isinstance(training_health, dict) and training_health.get("gate_status") == "repair":
         blocking_issues.append("eval_training_failure")
         suggested_adjustments.update({"train_lr": "decrease", "train_grad_accum": "increase"})
+    if isinstance(training_health, dict):
+        training_warnings = [str(warning) for warning in training_health.get("warnings") or []]
+        if any(
+            warning in {"training_metrics_missing", "training_metrics_empty", "training_loss_missing"}
+            for warning in training_warnings
+        ):
+            blocking_issues.append("eval_training_metrics_missing")
+            suggested_adjustments.update({"train_lr": "decrease", "train_grad_accum": "increase"})
     judge_labels = _judge_labels(judge)
     labels.extend(judge_labels)
     if judge_enabled and judge.get("gate_status") == "repair":
@@ -435,12 +450,22 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
     elif judge_enabled and judge.get("gate_status") == "warn":
         warnings.append("eval_judge_quality_warn")
     unsupported_grounding_rate = _safe_float(judge.get("unsupported_grounding_rate")) if isinstance(judge, dict) else 0.0
+    insufficient_grounding_rate = _insufficient_grounding_rate(judge)
     if judge_enabled and unsupported_grounding_rate > 0.2:
         blocking_issues.append("eval_grounding_failure")
         labels.append("grounding_unsupported")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
     elif judge_enabled and unsupported_grounding_rate > 0.1:
         warnings.append("eval_grounding_warn")
+    if judge_enabled and insufficient_grounding_rate > 0.5:
+        blocking_issues.append("eval_grounding_insufficient_source")
+        labels.append("grounding_insufficient_source")
+        suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
+    if not judge_enabled and semantic_mismatch_rate > 0.2:
+        blocking_issues.append("eval_semantic_mismatch_rate_too_high")
+        suggested_adjustments["sft_prompt_preset"] = "schema_strict"
+    elif not judge_enabled and semantic_mismatch_rate > 0.0:
+        warnings.append("eval_semantic_mismatch_present")
     if any(_has_any(label, ("knowledge", "missing", "coverage", "hallucination", "grounding")) for label in labels):
         blocking_issues.append("eval_knowledge_missing")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
@@ -467,6 +492,8 @@ def validate_eval_output(output: Dict[str, Any]) -> QualityReport:
             "judge_gate": judge.get("gate_status") if isinstance(judge, dict) else None,
             "judge_major_failure_rate": judge.get("major_failure_rate") if isinstance(judge, dict) else None,
             "judge_unsupported_grounding_rate": unsupported_grounding_rate,
+            "judge_insufficient_grounding_rate": insufficient_grounding_rate,
+            "semantic_mismatch_rate": semantic_mismatch_rate,
         },
         recommended_actions=recommended_actions,
         suggested_adjustments=suggested_adjustments,
@@ -525,6 +552,40 @@ def _cluster_labels(cluster_preview: Any) -> List[str]:
     return labels
 
 
+def _cluster_counts(cluster_preview: Any) -> dict[str, int]:
+    if not isinstance(cluster_preview, dict):
+        return {}
+    clusters = cluster_preview.get("clusters") or []
+    counts: dict[str, int] = {}
+    for cluster in clusters:
+        if not isinstance(cluster, dict) or not cluster.get("label"):
+            continue
+        label = str(cluster["label"]).lower()
+        count = _safe_int(cluster.get("count"))
+        if count <= 0:
+            count = len(cluster.get("examples") or []) if isinstance(cluster.get("examples"), list) else 1
+        counts[label] = counts.get(label, 0) + max(0, count)
+    return counts
+
+
+def _cluster_rate(
+    cluster_counts: dict[str, int],
+    label: str,
+    metrics_payload: Dict[str, Any],
+    failure_rate: float | None,
+) -> float:
+    count = int(cluster_counts.get(label, 0) or 0)
+    if count <= 0:
+        return 0.0
+    num_predictions = _safe_int(metrics_payload.get("num_predictions"))
+    if num_predictions > 0:
+        return count / num_predictions
+    total_clustered = sum(cluster_counts.values())
+    if failure_rate is not None and total_clustered > 0:
+        return (count / total_clustered) * max(0.0, min(failure_rate, 1.0))
+    return 1.0
+
+
 def _judge_labels(judge: Any) -> List[str]:
     if not isinstance(judge, dict):
         return []
@@ -532,6 +593,20 @@ def _judge_labels(judge: Any) -> List[str]:
     if not isinstance(counts, dict):
         return []
     return [str(label).lower() for label, count in counts.items() if count]
+
+
+def _insufficient_grounding_rate(judge: Any) -> float:
+    if not isinstance(judge, dict):
+        return 0.0
+    counts = judge.get("grounding_counts") or {}
+    if not isinstance(counts, dict):
+        return 0.0
+    num_judged = _safe_int(judge.get("num_judged"))
+    if num_judged <= 0:
+        num_judged = sum(_safe_int(value) for value in counts.values())
+    if num_judged <= 0:
+        return 0.0
+    return _safe_int(counts.get("insufficient_source")) / num_judged
 
 
 def _has_any(value: str, needles: tuple[str, ...]) -> bool:
