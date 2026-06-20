@@ -22,6 +22,7 @@ def run_inference(
     out_dir: str,
     max_samples: int = 64,
     max_new_tokens: int = 128,
+    max_input_tokens: int | None = None,
 ) -> str:
     out_path = Path(out_dir) / "predictions.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,9 +31,10 @@ def run_inference(
     results: List[Dict[str, Any]] = []
 
     model.eval()
+    input_max_length = _safe_input_max_length(tokenizer, max_input_tokens)
     for idx, example in enumerate(sample):
         prompt, reference = extract_text_input_output(example)
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=tokenizer.model_max_length)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=input_max_length)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         with torch.no_grad():
             output_ids = model.generate(
@@ -60,6 +62,23 @@ def run_inference(
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     return str(out_path)
+
+
+def _safe_input_max_length(tokenizer: Any, configured_max: int | None) -> int:
+    try:
+        configured_int = int(configured_max) if configured_max is not None else 0
+    except (TypeError, ValueError):
+        configured_int = 0
+    if configured_int > 0:
+        return configured_int
+    model_max = getattr(tokenizer, "model_max_length", None)
+    try:
+        model_max_int = int(model_max)
+    except (TypeError, ValueError):
+        model_max_int = 0
+    if model_max_int <= 0 or model_max_int > 1_000_000:
+        return 2048
+    return min(model_max_int, 8192)
 
 
 def run_image_inference(

@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 
 import torch
+from datasets import Dataset
 from PIL import Image
 
 from core.agentic.validators import validate_eval_output
 from core.llm.client import LLMResponse
 from tools.eval_model.eval.error_analysis import cluster_failures
 from tools.eval_model.eval.failures import collect_failures_with_metrics
+from tools.eval_model.eval.inference import run_inference
 from tools.eval_model.eval.llm_judge import run_llm_judge
 from tools.eval_model.eval.train_health import evaluate_training_health
 from tools.eval_model.tool import EvalModelTool
@@ -31,6 +33,17 @@ class FakeTextTokenizer:
         if tokens == [11, 12, 101, 102]:
             return "What is the capital of France? Paris."
         return " ".join(str(token) for token in tokens)
+
+
+class HugeMaxTextTokenizer(FakeTextTokenizer):
+    model_max_length = 10**30
+
+    def __init__(self) -> None:
+        self.max_lengths: list[int] = []
+
+    def __call__(self, text, **kwargs):
+        self.max_lengths.append(kwargs["max_length"])
+        return super().__call__(text, **kwargs)
 
 
 class FakeTextModel:
@@ -384,6 +397,22 @@ def test_eval_model_text_path_writes_metrics_and_disabled_judge(monkeypatch, tmp
     assert Path(result["base_failures_path"]).exists()
     assert result["lift_summary"]["enabled"] is True
     assert result["lift_summary"]["failure_rate_delta"] == 0.0
+
+
+def test_text_eval_uses_safe_input_length_for_tokenizer_sentinel(tmp_path: Path) -> None:
+    tokenizer = HugeMaxTextTokenizer()
+    dataset = Dataset.from_list([{"prompt": "Q", "response": "A"}])
+
+    run_inference(
+        model=FakeTextModel(),
+        tokenizer=tokenizer,
+        dataset=dataset,
+        out_dir=str(tmp_path),
+        max_samples=1,
+        max_new_tokens=2,
+    )
+
+    assert tokenizer.max_lengths == [2048]
 
 
 def test_eval_model_image_path_uses_vlm_loader(monkeypatch, tmp_path: Path) -> None:

@@ -415,6 +415,7 @@ class WorkflowRunner:
                 "split": eval_split,
                 "max_samples": cfg.eval_max_samples,
                 "max_new_tokens": cfg.eval_max_new_tokens,
+                "max_input_tokens": cfg.eval_max_input_tokens or cfg.train_max_seq_len,
                 "training_modality": cfg.training_modality,
                 "train_log_paths": train_out.get("log_paths"),
                 "max_steps": cfg.max_steps,

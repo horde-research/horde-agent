@@ -72,6 +72,9 @@ class EvalModelTool(BaseTool):
         dataset, _ = load_dataset_from_path(test_dataset_path, split=config.get("split", "train"))
         max_samples = int(config.get("max_samples", 64))
         max_new_tokens = int(config.get("max_new_tokens", 128))
+        max_input_tokens = _optional_positive_int(
+            config.get("max_input_tokens") or config.get("eval_max_input_tokens") or config.get("train_max_seq_len")
+        )
         compare_base = _as_bool(config.get("eval_compare_base_model", True))
         train_health = evaluate_training_health(
             config.get("train_log_paths"),
@@ -117,6 +120,7 @@ class EvalModelTool(BaseTool):
                     out_dir=str(Path(run_dir) / "base"),
                     max_samples=max_samples,
                     max_new_tokens=max_new_tokens,
+                    max_input_tokens=max_input_tokens,
                 )
                 base_eval = _finalize_predictions(
                     base_predictions_path,
@@ -134,6 +138,7 @@ class EvalModelTool(BaseTool):
                 out_dir=run_dir,
                 max_samples=max_samples,
                 max_new_tokens=max_new_tokens,
+                max_input_tokens=max_input_tokens,
             )
 
         adapter_eval = _finalize_predictions(
@@ -275,3 +280,11 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

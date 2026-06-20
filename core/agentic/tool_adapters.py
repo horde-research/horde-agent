@@ -449,6 +449,7 @@ class AgenticToolAdapter:
                 "split": eval_split,
                 "max_samples": cfg.get("eval_max_samples", 64),
                 "max_new_tokens": cfg.get("eval_max_new_tokens", 128),
+                "max_input_tokens": cfg.get("eval_max_input_tokens") or cfg.get("train_max_seq_len"),
                 "training_modality": _training_modality(cfg),
                 "train_log_paths": state.artifacts.get("train_log_paths"),
                 "max_steps": cfg.get("max_steps"),

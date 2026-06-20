@@ -124,6 +124,7 @@ class PipelineConfig(BaseModel):
     eval_split: str = "validation"
     eval_max_samples: int = 64
     eval_max_new_tokens: int = 128
+    eval_max_input_tokens: Optional[int] = None
     eval_compare_base_model: bool = True
     eval_enable_llm_judge: bool = False
     eval_judge_max_samples: int = 32
@@ -220,6 +221,8 @@ class PipelineConfig(BaseModel):
             "train_max_seq_len": os.getenv("TRAIN_MAX_SEQ_LEN"),
             "eval_split": os.getenv("EVAL_SPLIT"),
             "eval_max_samples": os.getenv("EVAL_MAX_SAMPLES"),
+            "eval_max_new_tokens": os.getenv("EVAL_MAX_NEW_TOKENS"),
+            "eval_max_input_tokens": os.getenv("EVAL_MAX_INPUT_TOKENS"),
             "eval_compare_base_model": os.getenv("EVAL_COMPARE_BASE_MODEL"),
             "eval_enable_llm_judge": os.getenv("EVAL_ENABLE_LLM_JUDGE"),
             "eval_judge_max_samples": os.getenv("EVAL_JUDGE_MAX_SAMPLES"),
