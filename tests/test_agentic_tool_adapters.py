@@ -503,15 +503,34 @@ def test_build_sft_adapter_merges_text_sources_across_collection_iterations(tmp_
     assert summary["num_existing_source_rows_seen"] == 1
 
 
-def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:
+def test_build_sft_adapter_does_not_push_dataset_before_split(monkeypatch, tmp_path: Path) -> None:
     images_dir = tmp_path / "collect" / "images"
     images_index = tmp_path / "collect" / "images.json"
     images_dir.mkdir(parents=True)
     images_index.write_text("[]", encoding="utf-8")
+    image_path = images_dir / "image.jpg"
+    image_path.write_bytes(b"fake")
     sft_path = tmp_path / "sft" / "sft.jsonl"
     annotations_path = tmp_path / "sft" / "annotations.jsonl"
     sft_path.parent.mkdir(parents=True)
-    sft_path.write_text('{"messages": []}\n', encoding="utf-8")
+    sft_path.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": str(image_path)},
+                            {"type": "text", "text": "Describe this image."},
+                        ],
+                    },
+                    {"role": "assistant", "content": "A caption."},
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     annotations_path.write_text('{"success": true}\n', encoding="utf-8")
     calls: list[dict[str, Any]] = []
 
@@ -553,41 +572,41 @@ def test_build_sft_adapter_pushes_dataset_to_hf_when_configured(monkeypatch, tmp
     result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
 
     assert result.status == "success"
-    assert result.artifacts["dataset_repo_id"] == "test-owner/test-dataset"
-    assert result.raw_output["dataset_repo_id"] == "test-owner/test-dataset"
-    assert calls == [
-        {
-            "local_path": str(sft_path),
-            "repo_name": "test-dataset",
-            "username": "test-owner",
-            "private": True,
-            "card_readme": calls[0]["card_readme"],
-        }
-    ]
-    assert "# Horde Agent SFT Dataset" in calls[0]["card_readme"]
-    assert "SFT examples" in calls[0]["card_readme"]
+    assert "dataset_repo_id" not in result.artifacts
+    assert calls == []
 
 
-def test_build_dataset_adapter_updates_hf_dataset_card_with_split_summary(monkeypatch, tmp_path: Path) -> None:
+def test_build_dataset_adapter_pushes_split_dataset_to_hf(monkeypatch, tmp_path: Path) -> None:
     manifest_path = tmp_path / "dataset_manifest.json"
     manifest_path.write_text("{}", encoding="utf-8")
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
     calls: list[dict[str, Any]] = []
 
-    def _update_repo_readme(repo_id, readme, *, repo_type):
-        calls.append({"repo_id": repo_id, "readme": readme, "repo_type": repo_type})
+    def _push_dataset(local_path, repo_name, *, username=None, private=True, card_readme=None):
+        calls.append(
+            {
+                "local_path": local_path,
+                "repo_name": repo_name,
+                "username": username,
+                "private": private,
+                "card_readme": card_readme,
+            }
+        )
+        return f"{username}/{repo_name}"
 
-    monkeypatch.setattr("core.hf_hub.update_repo_readme", _update_repo_readme)
+    monkeypatch.setattr("core.hf_hub.push_dataset", _push_dataset)
     build_dataset_tool = FakeTool(
         {
             "dataset_ref": {
                 "kind": "hf",
-                "data_path": str(tmp_path / "dataset"),
+                "data_path": str(dataset_dir),
                 "split": "train",
                 "eval_split": "validation",
                 "split_counts": {"train": 8, "validation": 2},
             },
             "dataset_summary": {
-                "data_path": str(tmp_path / "dataset"),
+                "data_path": str(dataset_dir),
                 "columns": ["messages", "group_key"],
                 "sample_count": 10,
                 "split_counts": {"train": 8, "validation": 2},
@@ -600,10 +619,9 @@ def test_build_dataset_adapter_updates_hf_dataset_card_with_split_summary(monkey
     adapter = AgenticToolAdapter({"build_dataset": build_dataset_tool})
     state = PipelineState(
         run_dir=str(tmp_path),
-        config={"sft_mode": "text", "sft_target_language": "English"},
+        config={"sft_mode": "text", "sft_target_language": "English", "hf_dataset_repo": "test-owner/test-dataset"},
         artifacts={
             "sft_path": str(tmp_path / "sft.jsonl"),
-            "dataset_repo_id": "test-owner/test-dataset",
             "num_sft_examples": 10,
         },
     )
@@ -611,11 +629,13 @@ def test_build_dataset_adapter_updates_hf_dataset_card_with_split_summary(monkey
     result = adapter.execute_build_dataset(state, ActionRequest(ActionType.BUILD_DATASET))
 
     assert result.status == "success"
+    assert result.artifacts["dataset_repo_id"] == "test-owner/test-dataset"
     assert result.artifacts["hf_dataset_card_updated"] is True
-    assert calls[0]["repo_id"] == "test-owner/test-dataset"
-    assert calls[0]["repo_type"] == "dataset"
-    assert "Split strategy" in calls[0]["readme"]
-    assert "group" in calls[0]["readme"]
+    assert calls[0]["local_path"] == str(dataset_dir)
+    assert calls[0]["repo_name"] == "test-dataset"
+    assert calls[0]["username"] == "test-owner"
+    assert "Split strategy" in calls[0]["card_readme"]
+    assert "group" in calls[0]["card_readme"]
 
 
 def test_pipeline_config_syncs_training_modality_and_legacy_sft_mode(tmp_path: Path) -> None:
@@ -749,12 +769,12 @@ def test_debug_stub_train_returns_valid_training_contract(tmp_path: Path) -> Non
     assert Path(result.artifacts["adapter_path"]).exists()
     assert result.artifacts["train_metrics"]["steps"] == 7
     assert result.artifacts["iterations"][0]["metrics"]["steps"] == 7
-    assert result.artifacts["hf_adapter_upload_skipped"] == "debug_stub_train"
+    assert "hf_adapter_upload_skipped" not in result.artifacts
     assert result.raw_output["training_modality"] == "text"
     assert result.raw_output["debug_stub"] is True
 
 
-def test_train_adapter_pushes_adapter_to_hf_when_configured(monkeypatch, tmp_path: Path) -> None:
+def test_train_adapter_does_not_push_adapter_before_eval(monkeypatch, tmp_path: Path) -> None:
     adapter_dir = tmp_path / "adapter"
     adapter_dir.mkdir()
     (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
@@ -794,32 +814,30 @@ def test_train_adapter_pushes_adapter_to_hf_when_configured(monkeypatch, tmp_pat
     result = adapter.execute_train_model(state, ActionRequest(ActionType.TRAIN_MODEL))
 
     assert result.status == "success"
-    assert result.artifacts["adapter_repo_id"] == "test-owner/test-adapter"
-    assert result.raw_output["adapter_repo_id"] == "test-owner/test-adapter"
-    assert calls == [
-        {
-            "local_path": str(adapter_dir),
-            "repo_name": "test-adapter",
-            "username": "test-owner",
-            "private": True,
-            "card_readme": calls[0]["card_readme"],
-        }
-    ]
-    assert "# Horde Agent LoRA Adapter" in calls[0]["card_readme"]
-    assert "Training Summary" in calls[0]["card_readme"]
+    assert "adapter_repo_id" not in result.artifacts
+    assert calls == []
 
 
-def test_eval_adapter_updates_hf_adapter_card_with_eval_summary(monkeypatch, tmp_path: Path) -> None:
+def test_eval_adapter_pushes_hf_adapter_after_eval_passes(monkeypatch, tmp_path: Path) -> None:
     predictions_path = tmp_path / "predictions.jsonl"
     failures_path = tmp_path / "failures.jsonl"
     predictions_path.write_text('{"id": 1}\n', encoding="utf-8")
     failures_path.write_text("", encoding="utf-8")
     calls: list[dict[str, Any]] = []
 
-    def _update_repo_readme(repo_id, readme, *, repo_type):
-        calls.append({"repo_id": repo_id, "readme": readme, "repo_type": repo_type})
+    def _push_adapter(local_path, repo_name, *, username=None, private=True, card_readme=None):
+        calls.append(
+            {
+                "local_path": local_path,
+                "repo_name": repo_name,
+                "username": username,
+                "private": private,
+                "card_readme": card_readme,
+            }
+        )
+        return f"{username}/{repo_name}"
 
-    monkeypatch.setattr("core.hf_hub.update_repo_readme", _update_repo_readme)
+    monkeypatch.setattr("core.hf_hub.push_adapter", _push_adapter)
     eval_tool = FakeTool(
         {
             "predictions_path": str(predictions_path),
@@ -851,10 +869,13 @@ def test_eval_adapter_updates_hf_adapter_card_with_eval_summary(monkeypatch, tmp
     adapter = AgenticToolAdapter({"eval_model": eval_tool})
     state = PipelineState(
         run_dir=str(tmp_path),
-        config={"hf_model_id": "test-model", "eval_enable_llm_judge": True},
+        config={
+            "hf_model_id": "test-model",
+            "eval_enable_llm_judge": True,
+            "hf_adapter_repo": "test-owner/test-adapter",
+        },
         artifacts={
             "adapter_path": str(tmp_path / "adapter"),
-            "adapter_repo_id": "test-owner/test-adapter",
             "dataset_ref": {"kind": "jsonl", "data_path": str(tmp_path / "sft.jsonl"), "split": "validation"},
             "train_metrics": {"last_train_loss": 1.0},
             "dataset_repo_id": "test-owner/test-dataset",
@@ -864,11 +885,56 @@ def test_eval_adapter_updates_hf_adapter_card_with_eval_summary(monkeypatch, tmp
     result = adapter.execute_evaluate_model(state, ActionRequest(ActionType.EVALUATE_MODEL))
 
     assert result.status == "success"
+    assert result.artifacts["adapter_repo_id"] == "test-owner/test-adapter"
     assert result.artifacts["hf_adapter_card_updated"] is True
-    assert calls[0]["repo_id"] == "test-owner/test-adapter"
-    assert calls[0]["repo_type"] == "model"
-    assert "Evaluation Summary" in calls[0]["readme"]
-    assert "Unsupported grounding rate" in calls[0]["readme"]
+    assert calls[0]["local_path"] == str(tmp_path / "adapter")
+    assert calls[0]["repo_name"] == "test-adapter"
+    assert calls[0]["username"] == "test-owner"
+    assert "Evaluation Summary" in calls[0]["card_readme"]
+    assert "Unsupported grounding rate" in calls[0]["card_readme"]
+
+
+def test_eval_adapter_does_not_push_hf_adapter_when_eval_fails(monkeypatch, tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text('{"id": 1}\n', encoding="utf-8")
+    failures_path.write_text('{"id": 1, "label": "knowledge_missing"}\n', encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+
+    def _push_adapter(local_path, repo_name, *, username=None, private=True, card_readme=None):
+        calls.append({"local_path": local_path, "repo_name": repo_name, "username": username})
+        return f"{username}/{repo_name}"
+
+    monkeypatch.setattr("core.hf_hub.push_adapter", _push_adapter)
+    eval_tool = FakeTool(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": [{"label": "knowledge_missing", "count": 1}]},
+            "metrics": {
+                "failure_rate": 1.0,
+                "num_predictions": 1,
+                "training_health": {"gate_status": "pass"},
+                "judge": {"enabled": False},
+            },
+            "training_health": {"gate_status": "pass"},
+        }
+    )
+    adapter = AgenticToolAdapter({"eval_model": eval_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"hf_model_id": "test-model", "hf_adapter_repo": "test-owner/test-adapter"},
+        artifacts={
+            "adapter_path": str(tmp_path / "adapter"),
+            "dataset_ref": {"kind": "jsonl", "data_path": str(tmp_path / "sft.jsonl"), "split": "validation"},
+        },
+    )
+
+    result = adapter.execute_evaluate_model(state, ActionRequest(ActionType.EVALUATE_MODEL))
+
+    assert result.status == "failed"
+    assert "adapter_repo_id" not in result.artifacts
+    assert calls == []
 
 
 def test_debug_stub_eval_returns_valid_happy_eval_contract(tmp_path: Path) -> None:

@@ -18,6 +18,8 @@ from core.agentic.models import PipelineState
 from core.agentic.resume import ResumeDecisionProvider, StaticResumeDecisionProvider
 from core.agentic.state_store import PipelineStateStore
 from core.agentic.tool_adapters import AgenticToolAdapter
+from core.agentic.validators import validate_eval_output
+from core.redaction import sanitize_secret_text
 from core.types.pipeline_types import TrainConfig
 from tools.train.training.log_parser import read_log_tail
 from tools.train.training.tuning import TuningBounds, apply_adjustments, generate_random_candidates
@@ -51,7 +53,7 @@ def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | No
             pushed["dataset_repo_id"] = repo_id
             logger.info("Dataset pushed to HF Hub: %s", repo_id)
         except Exception as exc:
-            logger.error("Failed to push dataset to HF Hub: %s", exc)
+            logger.error("Failed to push dataset to HF Hub: %s", sanitize_secret_text(str(exc)))
 
     if adapter_path and cfg.hf_adapter_repo:
         try:
@@ -59,7 +61,7 @@ def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | No
             pushed["adapter_repo_id"] = repo_id
             logger.info("Adapter pushed to HF Hub: %s", repo_id)
         except Exception as exc:
-            logger.error("Failed to push adapter to HF Hub: %s", exc)
+            logger.error("Failed to push adapter to HF Hub: %s", sanitize_secret_text(str(exc)))
 
     return pushed
 
@@ -287,12 +289,11 @@ class WorkflowRunner:
         sft_path = sft_out["sft_path"]
         logger.info("Built %d SFT examples -> %s", sft_out["num_examples"], sft_path)
 
-        # Push SFT dataset to HF Hub
-        _push_to_hf_hub_if_configured(cfg, dataset_path=sft_path)
-
         # Step 4 — Build HF dataset
         logger.info("Step 4/7: Loading SFT dataset for training...")
         dataset_out = build_dataset.execute(sft_path, self._dataset_build_config())
+        dataset_ref = dataset_out.get("dataset_ref") or {}
+        hub_info = _push_to_hf_hub_if_configured(cfg, dataset_path=dataset_ref.get("data_path"))
 
         # Steps 5-7 — Train, evaluate, report
         result = self._train_eval_report(
@@ -317,6 +318,7 @@ class WorkflowRunner:
             },
             mode_name="full",
         )
+        result.update(hub_info)
 
         # Push trained adapter to HF Hub
         adapter_path = result.get("adapter_path")
@@ -339,6 +341,8 @@ class WorkflowRunner:
         reporting: ReportingTool = self.tools["reporting"]
 
         dataset_out = build_dataset.execute(cfg.data_path, self._dataset_build_config())
+        dataset_ref = dataset_out.get("dataset_ref") or {}
+        hub_info = _push_to_hf_hub_if_configured(cfg, dataset_path=dataset_ref.get("data_path"))
 
         result = self._train_eval_report(
             dataset_out=dataset_out,
@@ -348,6 +352,7 @@ class WorkflowRunner:
             extra_report_data={},
             mode_name="workflow",
         )
+        result.update(hub_info)
 
         adapter_path = result.get("adapter_path")
         if adapter_path:
@@ -425,6 +430,12 @@ class WorkflowRunner:
                 "llm_batch_delay": cfg.llm_batch_delay,
             },
         )
+        eval_report = validate_eval_output(eval_out)
+        if not eval_report.passed:
+            raise RuntimeError(
+                "Evaluation quality gate failed: "
+                + ", ".join(eval_report.blocking_issues or ["unknown_eval_failure"])
+            )
 
         logger.info("Generating report...")
         report_path = reporting.finalize({

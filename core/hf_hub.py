@@ -47,7 +47,7 @@ def push_dataset(
 
     Returns the full repo id (``username/repo_name``).
     """
-    from datasets import Dataset, load_dataset, load_from_disk
+    from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
 
     username = username or _hf_username()
     repo_id = f"{username}/{repo_name}"
@@ -60,12 +60,14 @@ def push_dataset(
     else:
         raise ValueError(f"Unsupported dataset path: {local_path}")
 
-    if not isinstance(ds, Dataset):
-        from datasets import DatasetDict
-        if isinstance(ds, DatasetDict):
-            ds = next(iter(ds.values()))
+    if isinstance(ds, DatasetDict):
+        row_count = sum(len(split) for split in ds.values())
+    elif isinstance(ds, Dataset):
+        row_count = len(ds)
+    else:
+        raise TypeError(f"Unsupported dataset object for upload: {type(ds).__name__}")
 
-    logger.info("Pushing dataset (%d rows) → %s (private=%s)", len(ds), repo_id, private)
+    logger.info("Pushing dataset (%d rows) → %s (private=%s)", row_count, repo_id, private)
     ds.push_to_hub(repo_id, private=private, token=_hf_token())
     if card_readme:
         update_repo_readme(repo_id, card_readme, repo_type="dataset")

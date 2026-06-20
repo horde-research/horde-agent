@@ -323,23 +323,13 @@ class AgenticToolAdapter:
                 **heldout_eval_artifacts,
                 **text_quality_artifacts,
             }
-            hub_info = {}
-            if report.passed:
-                hub_info = _push_hf_outputs_if_configured(
-                    cfg,
-                    dataset_path=output.get("sft_path"),
-                    dataset_card_readme=_build_dataset_card(state, current_artifacts=sft_artifacts),
-                )
             return ActionResult(
                 action_type=ActionType.BUILD_SFT_DATASET,
                 status=_status_from_report(report),
-                artifacts={
-                    **sft_artifacts,
-                    **hub_info,
-                },
+                artifacts=sft_artifacts,
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output={**output, **hub_info},
+                raw_output=output,
             )
         except Exception as exc:
             return _failed_result(ActionType.BUILD_SFT_DATASET, exc)
@@ -362,7 +352,16 @@ class AgenticToolAdapter:
             report = validate_dataset_output(output)
             hub_info = {}
             if report.passed:
-                hub_info = _update_hf_dataset_card_if_configured(state, cfg, output)
+                dataset_ref = output.get("dataset_ref") if isinstance(output.get("dataset_ref"), dict) else {}
+                dataset_path = dataset_ref.get("data_path") or (output.get("dataset_summary") or {}).get("data_path")
+                hub_info = _push_hf_outputs_if_configured(
+                    cfg,
+                    dataset_path=dataset_path,
+                    dataset_card_readme=_build_dataset_card(
+                        state,
+                        dataset_summary=output.get("dataset_summary"),
+                    ),
+                )
             return ActionResult(
                 action_type=ActionType.BUILD_DATASET,
                 status=_status_from_report(report),
@@ -419,27 +418,13 @@ class AgenticToolAdapter:
                 "train_metrics": output.get("metrics"),
                 "iterations": [output.get("iteration_record")] if output.get("iteration_record") else [],
             }
-            hub_info = {}
-            if report.passed:
-                if _as_bool(cfg.get("debug_stub_train", False)):
-                    if cfg.get("hf_adapter_repo"):
-                        hub_info["hf_adapter_upload_skipped"] = "debug_stub_train"
-                else:
-                    hub_info = _push_hf_outputs_if_configured(
-                        cfg,
-                        adapter_path=output.get("adapter_path"),
-                        adapter_card_readme=_build_adapter_card(state, current_artifacts=train_artifacts),
-                    )
             return ActionResult(
                 action_type=ActionType.TRAIN_MODEL,
                 status=_status_from_report(report),
-                artifacts={
-                    **train_artifacts,
-                    **hub_info,
-                },
+                artifacts=train_artifacts,
                 metrics=report.metrics,
                 quality_report=report,
-                raw_output={**output, **hub_info},
+                raw_output=output,
             )
         except Exception as exc:
             return _failed_result(ActionType.TRAIN_MODEL, exc)
@@ -511,7 +496,22 @@ class AgenticToolAdapter:
                 "eval_lift_summary": output.get("lift_summary"),
                 "eval_lift_summary_path": output.get("lift_summary_path"),
             }
-            hub_info = _update_hf_adapter_card_if_configured(state, cfg, eval_artifacts, report)
+            hub_info = {}
+            if report.passed:
+                if _as_bool(cfg.get("debug_stub_train", False)) or _as_bool(cfg.get("debug_stub_eval", False)):
+                    if cfg.get("hf_adapter_repo"):
+                        skipped_by = "debug_stub_train" if _as_bool(cfg.get("debug_stub_train", False)) else "debug_stub_eval"
+                        hub_info["hf_adapter_upload_skipped"] = skipped_by
+                else:
+                    hub_info = _push_hf_outputs_if_configured(
+                        cfg,
+                        adapter_path=adapter_path,
+                        adapter_card_readme=_build_adapter_card(
+                            state,
+                            current_artifacts=eval_artifacts,
+                            eval_report=report,
+                        ),
+                    )
             return ActionResult(
                 action_type=ActionType.EVALUATE_MODEL,
                 status=_status_from_report(report),
