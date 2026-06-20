@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.workflow import WorkflowRunner
+from agent.workflow import _clear_agentic_stage_files
 from config import PipelineConfig
 from core.agentic.action_space import ActionType
 from core.agentic.models import ActionRequest, ActionResult, PipelineState, QualityReport
@@ -34,6 +35,21 @@ class FakeTool:
         return self.output
 
 
+class WritingFakeTool(FakeTool):
+    def __init__(self, output: dict[str, Any], *, files: dict[Path, str] | None = None, dirs: list[Path] | None = None) -> None:
+        super().__init__(output)
+        self.files = files or {}
+        self.dirs = dirs or []
+
+    def execute(self, *args, **kwargs):
+        for path in self.dirs:
+            path.mkdir(parents=True, exist_ok=True)
+        for path, content in self.files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return super().execute(*args, **kwargs)
+
+
 class FakeReportingTool:
     def __init__(self, report_path: str) -> None:
         self.report_path = report_path
@@ -48,6 +64,23 @@ class FakeReportingTool:
 class ExplodingTool:
     def execute(self, *args, **kwargs):
         raise AssertionError("real train/eval tool should not run in debug stub mode")
+
+
+def test_restart_cleanup_removes_stale_sft_registry_and_cache(tmp_path: Path) -> None:
+    collect_dir = tmp_path / "collect"
+    sft_dir = tmp_path / "sft"
+    dataset_dir = tmp_path / "dataset"
+    collect_dir.mkdir()
+    sft_dir.mkdir()
+    dataset_dir.mkdir()
+    (sft_dir / "collected_texts_merged.jsonl").write_text('{"text":"old"}\n', encoding="utf-8")
+    (sft_dir / "text_annotation_cache.jsonl").write_text('{"cache_key":"old"}\n', encoding="utf-8")
+
+    _clear_agentic_stage_files(str(tmp_path), ActionType.BUILD_SFT_DATASET)
+
+    assert collect_dir.exists()
+    assert not sft_dir.exists()
+    assert not dataset_dir.exists()
 
 
 def test_full_agentic_workflow_runs_known_graph_with_image_collection(tmp_path: Path) -> None:
@@ -317,6 +350,10 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
     sft_path.parent.mkdir(parents=True)
     sft_path.write_text('{"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}\n', encoding="utf-8")
     annotations_path.write_text('{"success": true}\n', encoding="utf-8")
+    stale_registry_path = sft_path.parent / "collected_texts_merged.jsonl"
+    stale_cache_path = sft_path.parent / "text_annotation_cache.jsonl"
+    stale_registry_path.write_text('{"text":"old source"}\n', encoding="utf-8")
+    stale_cache_path.write_text('{"cache_key":"old annotation"}\n', encoding="utf-8")
     manifest_path.write_text("{}\n", encoding="utf-8")
 
     taxonomy_tool = FakeTool(
@@ -326,7 +363,7 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
             "category_subcategory_queries": {"new": {"slot": ["new q1", "new q2", "new q3"]}},
         }
     )
-    collect_tool = FakeTool(
+    collect_tool = WritingFakeTool(
         {
             "data_path": str(dataset_dir),
             "num_samples": 3,
@@ -336,12 +373,14 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
                 "images_index": str(images_index),
                 "num_images": 1,
             },
-        }
+        },
+        dirs=[dataset_dir, images_dir],
+        files={images_index: "[]\n"},
     )
     tools = {
         "generate_taxonomy": taxonomy_tool,
         "collect_data": collect_tool,
-        "build_sft_dataset": FakeTool(
+        "build_sft_dataset": WritingFakeTool(
             {
                 "mode": "image",
                 "num_items": 1,
@@ -350,9 +389,13 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
                 "num_failures": 0,
                 "annotations_path": str(annotations_path),
                 "sft_path": str(sft_path),
-            }
+            },
+            files={
+                sft_path: '{"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]}\n',
+                annotations_path: '{"success": true}\n',
+            },
         ),
-        "build_dataset": FakeTool(
+        "build_dataset": WritingFakeTool(
             {
                 "dataset_ref": {"kind": "hf", "data_path": str(sft_path), "split": "train"},
                 "dataset_summary": {
@@ -361,7 +404,8 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
                     "validation_warnings": [],
                 },
                 "dataset_manifest_path": str(manifest_path),
-            }
+            },
+            files={manifest_path: "{}\n"},
         ),
         "train": ExplodingTool(),
         "eval_model": ExplodingTool(),
@@ -391,3 +435,5 @@ def test_full_agentic_restart_from_stage_rebuilds_stale_taxonomy_state(tmp_path:
     assert not result["blockers"]
     assert result["recovery_fingerprints"] == []
     assert Path(result["artifacts"]["report_path"]).exists()
+    assert not stale_registry_path.exists()
+    assert not stale_cache_path.exists()

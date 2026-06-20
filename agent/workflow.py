@@ -6,12 +6,13 @@ Every parameter is read from PipelineConfig. No hidden defaults.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from config import PipelineConfig
 from core.agentic.agent import Agent, DEFAULT_SEED
-from core.agentic.action_space import ActionType
+from core.agentic.action_space import ActionType, FULL_GRAPH_ACTIONS
 from core.agentic.langgraph_runtime import LangGraphAgentRuntime
 from core.agentic.models import PipelineState
 from core.agentic.resume import ResumeDecisionProvider, StaticResumeDecisionProvider
@@ -61,6 +62,43 @@ def _push_to_hf_hub_if_configured(cfg: PipelineConfig, *, dataset_path: str | No
             logger.error("Failed to push adapter to HF Hub: %s", exc)
 
     return pushed
+
+
+_AGENTIC_STAGE_PATHS: dict[ActionType, tuple[str, ...]] = {
+    ActionType.COLLECT_DATA: ("collect",),
+    ActionType.BUILD_SFT_DATASET: ("sft",),
+    ActionType.BUILD_DATASET: ("dataset", "dataset_manifest.json"),
+    ActionType.TRAIN_MODEL: ("iterations", "iterations.json", "debug_stub"),
+    ActionType.EVALUATE_MODEL: ("eval",),
+    ActionType.GENERATE_REPORT: ("report.md",),
+}
+
+
+def _clear_agentic_stage_files(run_dir: str, stage: ActionType) -> None:
+    run_path = Path(run_dir).resolve()
+    ordered = list(FULL_GRAPH_ACTIONS)
+    if stage not in ordered:
+        return
+    for action in ordered[ordered.index(stage) :]:
+        for relative_path in _AGENTIC_STAGE_PATHS.get(action, ()):
+            target = (run_path / relative_path).resolve()
+            if not _is_within_run_dir(target, run_path):
+                logger.warning("Skipping restart cleanup outside run_dir: %s", target)
+                continue
+            if target.is_dir():
+                shutil.rmtree(target)
+                logger.info("Removed stale stage directory for restart: %s", target)
+            elif target.exists():
+                target.unlink()
+                logger.info("Removed stale stage file for restart: %s", target)
+
+
+def _is_within_run_dir(path: Path, run_dir: Path) -> bool:
+    try:
+        path.relative_to(run_dir)
+    except ValueError:
+        return False
+    return path != run_dir
 
 
 class WorkflowRunner:
@@ -124,6 +162,7 @@ class WorkflowRunner:
             ]
             restart_stage = self._agentic_restart_stage()
             if restart_stage:
+                _clear_agentic_stage_files(self.cfg.run_dir, restart_stage)
                 state.clear_stage_and_downstream(restart_stage)
                 state.resume_confirmations.clear()
                 state.decision_history.clear()
