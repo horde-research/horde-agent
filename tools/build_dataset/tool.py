@@ -59,6 +59,7 @@ class BuildDatasetTool(BaseTool):
         validation_split = str(config.get("validation_split") or config.get("eval_split") or "validation")
         validation_ratio = _validation_ratio(config.get("validation_ratio", config.get("val_ratio", 0.1)))
         seed = int(config.get("seed", 42))
+        group_split = _as_bool(config.get("group_split", config.get("split_by_group", False)))
         run_dir = config.get("run_dir") or config.get("out_dir")
         if not run_dir:
             raise ValueError("BuildDatasetTool requires config['run_dir'] (or 'out_dir').")
@@ -79,6 +80,7 @@ class BuildDatasetTool(BaseTool):
             validation_ratio=validation_ratio,
             seed=seed,
             group_key_column=group_key_column,
+            group_split=group_split,
         )
         warnings.extend(split_warnings)
         dataset_dir = Path(run_dir) / "dataset"
@@ -137,6 +139,7 @@ def _build_train_validation_splits(
     validation_ratio: float,
     seed: int,
     group_key_column: str = "group_key",
+    group_split: bool = False,
 ) -> tuple[DatasetDict, list[str], dict[str, Any]]:
     warnings: list[str] = []
     total = len(dataset)
@@ -154,9 +157,9 @@ def _build_train_validation_splits(
             warnings.append("validation_disabled_reuses_train")
         return DatasetDict({train_split: dataset, validation_split: dataset}), warnings, row_split_metadata
 
-    group_values = _group_values(dataset, group_key_column)
+    group_values = _group_values(dataset, group_key_column) if group_split else None
     if group_values:
-        group_split = _build_group_train_validation_splits(
+        group_split_result = _build_group_train_validation_splits(
             dataset,
             group_values=group_values,
             train_split=train_split,
@@ -165,13 +168,21 @@ def _build_train_validation_splits(
             seed=seed,
             group_key_column=group_key_column,
         )
-        if group_split is not None:
-            return group_split
+        if group_split_result is not None:
+            return group_split_result
 
     val_count = max(1, int(round(total * validation_ratio)))
     val_count = min(val_count, total - 1)
     split = dataset.train_test_split(test_size=val_count, seed=seed, shuffle=True)
     return DatasetDict({train_split: split["train"], validation_split: split["test"]}), warnings, row_split_metadata
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 def _group_values(dataset: Dataset, group_key_column: str) -> list[str] | None:

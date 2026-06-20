@@ -203,21 +203,26 @@ When judge is enabled, deterministic string-similarity failures are kept as diag
 
 ## Held-Out Source Evaluation
 
-For text runs, `full_agentic` splits collected source groups before SFT annotation:
+Primary text evaluation uses the built dataset validation split by default. That validation split is built from generated SFT rows with `DATASET_GROUP_SPLIT=false`, so source documents can contribute examples to both train and validation. This is the upload-quality gate for the adapter.
+
+`full_agentic` can also build a source-heldout challenge set. When enabled, it splits collected source groups before SFT annotation:
 
 - train source groups are converted into SFT examples for LoRA training.
 - held-out source groups are converted into eval-only QA examples and are never used for training.
 
-The split is deterministic by `SEED` and can be tuned from `.env`:
+This is a harder closed-book generalization test because it can ask about facts that never appeared in train. It is therefore disabled and non-blocking by default. The split is deterministic by `SEED` and can be tuned from `.env`:
 
 ```bash
 SOURCE_EVAL_ENABLE=true
+SOURCE_EVAL_BLOCKING=false
 SOURCE_EVAL_RATIO=0.10
 SOURCE_EVAL_MAX_ITEMS=8
 EVAL_COMPARE_BASE_MODEL=true
 ```
 
-When held-out eval examples exist, `evaluate_model` uses them instead of the internal dataset validation split. It first predicts with the base model, then predicts with the trained LoRA adapter on the same examples, and writes `eval/attempt_N/lift_summary.json` with deltas such as quality score, failure rate, major failure rate, and unsupported grounding rate.
+When `SOURCE_EVAL_ENABLE=true` and `SOURCE_EVAL_BLOCKING=false`, `evaluate_model` still gates on the dataset validation split, then writes non-blocking source challenge outputs under `eval/attempt_N/source_challenge/`. When `SOURCE_EVAL_BLOCKING=true`, the held-out source set replaces the dataset validation split as the primary gate. In both modes, eval predicts with the base model and trained LoRA adapter and writes lift summaries with deltas such as quality score, failure rate, major failure rate, and unsupported grounding rate.
+
+For stricter dataset validation without enabling the separate source challenge, set `DATASET_GROUP_SPLIT=true`. That makes the dataset validation split hold out whole source groups and is expected to be harder than the default row split.
 
 ## Incremental Text Recovery
 

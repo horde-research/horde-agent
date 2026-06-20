@@ -110,7 +110,8 @@ class PipelineConfig(BaseModel):
     sft_prompt_preset: str = "default"
     sft_reuse_annotations: bool = True
     image_sft_tasks: List[str] = Field(default_factory=lambda: ["caption"])
-    source_eval_enable: bool = True
+    source_eval_enable: bool = False
+    source_eval_blocking: bool = False
     source_eval_ratio: float = 0.1
     source_eval_max_items: int = 8
 
@@ -132,6 +133,7 @@ class PipelineConfig(BaseModel):
     max_samples: Optional[int] = None
     search_trials: int = 0
     dataset_val_ratio: float = 0.1
+    dataset_group_split: bool = False
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     eval_split: str = "validation"
@@ -236,6 +238,7 @@ class PipelineConfig(BaseModel):
             "sft_reuse_annotations": os.getenv("SFT_REUSE_ANNOTATIONS"),
             "image_sft_tasks": os.getenv("IMAGE_SFT_TASKS"),
             "source_eval_enable": os.getenv("SOURCE_EVAL_ENABLE"),
+            "source_eval_blocking": os.getenv("SOURCE_EVAL_BLOCKING"),
             "source_eval_ratio": os.getenv("SOURCE_EVAL_RATIO"),
             "source_eval_max_items": os.getenv("SOURCE_EVAL_MAX_ITEMS"),
             "hf_model_id": os.getenv("HF_MODEL_ID"),
@@ -243,6 +246,7 @@ class PipelineConfig(BaseModel):
             "max_steps": os.getenv("MAX_STEPS"),
             "max_samples": os.getenv("MAX_SAMPLES"),
             "dataset_val_ratio": os.getenv("DATASET_VAL_RATIO"),
+            "dataset_group_split": os.getenv("DATASET_GROUP_SPLIT"),
             "train_batch_size": os.getenv("TRAIN_BATCH_SIZE"),
             "train_max_seq_len": os.getenv("TRAIN_MAX_SEQ_LEN"),
             "eval_split": os.getenv("EVAL_SPLIT"),

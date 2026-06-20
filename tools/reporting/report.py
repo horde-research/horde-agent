@@ -198,6 +198,14 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
             lines.append(f"- Attempt: {eval_summary['attempt']}")
         if eval_summary.get("attempt_dir"):
             lines.append(f"- Attempt directory: `{eval_summary['attempt_dir']}`")
+        if eval_summary.get("source_type"):
+            lines.append(f"- Primary eval source: `{eval_summary['source_type']}`")
+        if eval_summary.get("split"):
+            lines.append(f"- Primary eval split: `{eval_summary['split']}`")
+        if eval_summary.get("data_path"):
+            lines.append(f"- Primary eval data path: `{eval_summary['data_path']}`")
+        if eval_summary.get("source_eval_blocking") is not None:
+            lines.append(f"- Source-heldout eval blocking: {bool(eval_summary['source_eval_blocking'])}")
         if eval_summary.get("failure_rate") is not None:
             lines.append(f"- Failure rate: {eval_summary['failure_rate']}")
         if eval_summary.get("num_predictions") is not None:
@@ -233,6 +241,36 @@ def _format_pipeline_summary(summary: Dict[str, Any]) -> List[str]:
                 )
         if eval_summary.get("lift_path"):
             lines.append(f"- Lift summary path: `{eval_summary['lift_path']}`")
+        source_challenge = (
+            eval_summary.get("source_challenge")
+            if isinstance(eval_summary.get("source_challenge"), dict)
+            else {}
+        )
+        if source_challenge and any(value is not None for value in source_challenge.values()):
+            lines.append("")
+            lines.append("#### Source-Heldout Challenge")
+            if source_challenge.get("error"):
+                lines.append(f"- Error: `{source_challenge['error']}`")
+            if source_challenge.get("attempt_dir"):
+                lines.append(f"- Attempt directory: `{source_challenge['attempt_dir']}`")
+            if source_challenge.get("split"):
+                lines.append(f"- Split: `{source_challenge['split']}`")
+            metrics = source_challenge.get("metrics") if isinstance(source_challenge.get("metrics"), dict) else {}
+            if metrics.get("failure_rate") is not None:
+                lines.append(f"- Failure rate: {metrics['failure_rate']}")
+            if metrics.get("num_predictions") is not None:
+                lines.append(f"- Predictions: {metrics['num_predictions']}")
+            judge = source_challenge.get("judge") if isinstance(source_challenge.get("judge"), dict) else {}
+            if judge:
+                lines.append(f"- Judge gate: {judge.get('gate_status') or 'unknown'}")
+                if judge.get("quality_score") is not None:
+                    lines.append(f"- Judge quality score: {judge['quality_score']}")
+                if judge.get("unsupported_grounding_rate") is not None:
+                    lines.append(f"- Unsupported grounding rate: {judge['unsupported_grounding_rate']}")
+            if source_challenge.get("metrics_path"):
+                lines.append(f"- Metrics path: `{source_challenge['metrics_path']}`")
+            if source_challenge.get("predictions_path"):
+                lines.append(f"- Predictions path: `{source_challenge['predictions_path']}`")
         lines.append("")
 
     if not lines:

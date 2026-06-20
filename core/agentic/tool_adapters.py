@@ -363,7 +363,7 @@ class AgenticToolAdapter:
                 source_split = _prepare_text_source_split(
                     str(input_jsonl),
                     sft_dir,
-                    enabled=_as_bool(cfg.get("source_eval_enable", True)),
+                    enabled=_as_bool(cfg.get("source_eval_enable", False)),
                     ratio=_float_value(cfg.get("source_eval_ratio"), _float_value(cfg.get("dataset_val_ratio"), 0.1)),
                     seed=_int_value(cfg.get("seed"), 42),
                     max_eval_items=_int_value(cfg.get("source_eval_max_items"), 8),
@@ -440,6 +440,7 @@ class AgenticToolAdapter:
                     "run_dir": state.run_dir,
                     "validation_ratio": cfg.get("dataset_val_ratio", 0.1),
                     "eval_split": cfg.get("eval_split", "validation"),
+                    "group_split": cfg.get("dataset_group_split", False),
                     "seed": cfg.get("seed", 42),
                 },
             )
@@ -529,18 +530,23 @@ class AgenticToolAdapter:
             adapter_path = state.artifacts.get("adapter_path")
             dataset_ref = state.artifacts.get("dataset_ref") or {}
             heldout_eval_path = state.artifacts.get("heldout_eval_sft_path")
-            data_path = heldout_eval_path or dataset_ref.get("data_path") or state.artifacts.get("sft_path") or cfg.get("data_path")
-            eval_split = "train" if heldout_eval_path else dataset_ref.get("eval_split") or cfg.get("eval_split", "validation")
+            source_eval_blocking = _as_bool(cfg.get("source_eval_blocking", False))
+            use_heldout_as_primary = bool(source_eval_blocking and heldout_eval_path)
+            data_path = (
+                heldout_eval_path
+                if use_heldout_as_primary
+                else dataset_ref.get("data_path") or state.artifacts.get("sft_path") or cfg.get("data_path")
+            )
+            eval_split = "train" if use_heldout_as_primary else dataset_ref.get("eval_split") or cfg.get("eval_split", "validation")
+            eval_source_type = "heldout_source_blocking" if use_heldout_as_primary else "dataset_validation"
             if not adapter_path:
                 raise ValueError("adapter_path artifact is required before evaluation.")
             if not data_path:
                 raise ValueError("dataset data_path is required before evaluation.")
             eval_attempt = _stage_attempt(state, ActionType.EVALUATE_MODEL)
             eval_run_dir = Path(state.run_dir) / "eval" / f"attempt_{eval_attempt}"
-            eval_config = {
-                "run_dir": str(eval_run_dir),
+            base_eval_config = {
                 "hf_model_id": cfg.get("hf_model_id"),
-                "split": eval_split,
                 "max_samples": cfg.get("eval_max_samples", 64),
                 "max_new_tokens": cfg.get("eval_max_new_tokens", 128),
                 "max_input_tokens": cfg.get("eval_max_input_tokens") or cfg.get("train_max_seq_len"),
@@ -560,24 +566,36 @@ class AgenticToolAdapter:
                 "llm_batch_size": cfg.get("llm_batch_size"),
                 "llm_batch_delay": cfg.get("llm_batch_delay"),
             }
-            if _as_bool(cfg.get("debug_stub_eval", False)):
-                output = _debug_eval_output(
-                    run_dir=str(eval_run_dir),
-                    data_path=str(data_path),
-                    split=str(eval_split),
-                    max_samples=int(eval_config["max_samples"] or 64),
-                    failure_rate=float(cfg.get("debug_eval_failure_rate") or 0.0),
-                )
-            else:
-                output = self.tools["eval_model"].execute(
+
+            def _run_eval(eval_data_path: str, *, split: str, run_dir: Path) -> Dict[str, Any]:
+                eval_config = {
+                    **base_eval_config,
+                    "run_dir": str(run_dir),
+                    "split": split,
+                }
+                if _as_bool(cfg.get("debug_stub_eval", False)):
+                    return _debug_eval_output(
+                        run_dir=str(run_dir),
+                        data_path=str(eval_data_path),
+                        split=str(split),
+                        max_samples=int(eval_config["max_samples"] or 64),
+                        failure_rate=float(cfg.get("debug_eval_failure_rate") or 0.0),
+                    )
+                return self.tools["eval_model"].execute(
                     str(adapter_path),
-                    str(data_path),
+                    str(eval_data_path),
                     eval_config,
                 )
+
+            output = _run_eval(str(data_path), split=str(eval_split), run_dir=eval_run_dir)
             report = validate_eval_output(output)
             eval_artifacts = {
                 "eval_attempt": eval_attempt,
                 "eval_attempt_dir": str(eval_run_dir),
+                "eval_source_type": eval_source_type,
+                "eval_data_path": str(data_path),
+                "eval_split": str(eval_split),
+                "source_eval_blocking": use_heldout_as_primary,
                 "predictions_path": output.get("predictions_path"),
                 "failures_path": output.get("failures_path"),
                 "cluster_preview": output.get("cluster_preview"),
@@ -592,6 +610,28 @@ class AgenticToolAdapter:
                 "eval_lift_summary": output.get("lift_summary"),
                 "eval_lift_summary_path": output.get("lift_summary_path"),
             }
+            if heldout_eval_path and not use_heldout_as_primary and _as_bool(cfg.get("source_eval_enable", False)):
+                challenge_dir = eval_run_dir / "source_challenge"
+                try:
+                    challenge_output = _run_eval(str(heldout_eval_path), split="train", run_dir=challenge_dir)
+                    eval_artifacts.update(
+                        _source_challenge_artifacts(
+                            challenge_output,
+                            challenge_dir=str(challenge_dir),
+                            data_path=str(heldout_eval_path),
+                            split="train",
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to run non-blocking held-out source challenge eval: %s", exc)
+                    eval_artifacts.update(
+                        {
+                            "source_challenge_eval_error": f"{type(exc).__name__}: {exc}",
+                            "source_challenge_eval_dir": str(challenge_dir),
+                            "source_challenge_data_path": str(heldout_eval_path),
+                            "source_challenge_split": "train",
+                        }
+                    )
             hub_info = {}
             if report.passed:
                 if _as_bool(cfg.get("debug_stub_train", False)) or _as_bool(cfg.get("debug_stub_eval", False)):
@@ -1094,6 +1134,33 @@ def _text_quality_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _source_challenge_artifacts(
+    output: Mapping[str, Any],
+    *,
+    challenge_dir: str,
+    data_path: str,
+    split: str,
+) -> Dict[str, Any]:
+    return {
+        "source_challenge_eval_dir": challenge_dir,
+        "source_challenge_data_path": data_path,
+        "source_challenge_split": split,
+        "source_challenge_predictions_path": output.get("predictions_path"),
+        "source_challenge_failures_path": output.get("failures_path"),
+        "source_challenge_cluster_preview": output.get("cluster_preview"),
+        "source_challenge_eval_metrics_path": output.get("eval_metrics_path"),
+        "source_challenge_eval_metrics": output.get("metrics"),
+        "source_challenge_training_health": output.get("training_health"),
+        "source_challenge_judge_summary": output.get("judge_summary"),
+        "source_challenge_base_predictions_path": output.get("base_predictions_path"),
+        "source_challenge_base_failures_path": output.get("base_failures_path"),
+        "source_challenge_base_judge_summary": output.get("base_judge_summary"),
+        "source_challenge_base_eval_metrics_path": output.get("base_eval_metrics_path"),
+        "source_challenge_lift_summary": output.get("lift_summary"),
+        "source_challenge_lift_summary_path": output.get("lift_summary_path"),
+    }
+
+
 def _stage_attempt(state: PipelineState, stage: ActionType) -> int:
     return sum(1 for result in state.result_history if result.get("action_type") == stage.value)
 
@@ -1353,6 +1420,16 @@ def _build_adapter_card(
     lift = artifacts.get("eval_lift_summary") if isinstance(artifacts.get("eval_lift_summary"), dict) else {}
     if not lift and isinstance(eval_metrics.get("lift"), dict):
         lift = eval_metrics["lift"]
+    challenge_metrics = (
+        artifacts.get("source_challenge_eval_metrics")
+        if isinstance(artifacts.get("source_challenge_eval_metrics"), dict)
+        else {}
+    )
+    challenge_judge = (
+        artifacts.get("source_challenge_judge_summary")
+        if isinstance(artifacts.get("source_challenge_judge_summary"), dict)
+        else {}
+    )
     lines = [
         "---",
         "tags:",
@@ -1388,6 +1465,7 @@ def _build_adapter_card(
         _markdown_table(
             [
                 ("Gate", eval_report.gate_status if eval_report else None),
+                ("Primary eval source", artifacts.get("eval_source_type")),
                 ("Failure rate", eval_metrics.get("failure_rate")),
                 ("Predictions", eval_metrics.get("num_predictions")),
                 ("Training health gate", training_health.get("gate_status")),
@@ -1399,6 +1477,9 @@ def _build_adapter_card(
                 ("Quality score delta vs base", lift.get("quality_score_delta")),
                 ("Failure rate delta vs base", lift.get("failure_rate_delta")),
                 ("Unsupported grounding delta vs base", lift.get("unsupported_grounding_rate_delta")),
+                ("Source challenge failure rate", challenge_metrics.get("failure_rate")),
+                ("Source challenge judge gate", challenge_judge.get("gate_status")),
+                ("Source challenge quality score", challenge_judge.get("quality_score")),
             ]
         ),
         "",
@@ -1520,6 +1601,10 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
         "eval_summary": {
             "attempt": state.artifacts.get("eval_attempt"),
             "attempt_dir": state.artifacts.get("eval_attempt_dir"),
+            "source_type": state.artifacts.get("eval_source_type"),
+            "data_path": state.artifacts.get("eval_data_path"),
+            "split": state.artifacts.get("eval_split"),
+            "source_eval_blocking": state.artifacts.get("source_eval_blocking"),
             "failure_rate": eval_metrics.get("failure_rate") if isinstance(eval_metrics, dict) else None,
             "num_predictions": eval_metrics.get("num_predictions") if isinstance(eval_metrics, dict) else None,
             "predictions_path": state.artifacts.get("predictions_path"),
@@ -1530,6 +1615,19 @@ def _build_pipeline_summary(state: PipelineState) -> Dict[str, Any]:
             "base_failures_path": state.artifacts.get("base_failures_path"),
             "lift": state.artifacts.get("eval_lift_summary"),
             "lift_path": state.artifacts.get("eval_lift_summary_path"),
+            "source_challenge": {
+                "attempt_dir": state.artifacts.get("source_challenge_eval_dir"),
+                "data_path": state.artifacts.get("source_challenge_data_path"),
+                "split": state.artifacts.get("source_challenge_split"),
+                "predictions_path": state.artifacts.get("source_challenge_predictions_path"),
+                "failures_path": state.artifacts.get("source_challenge_failures_path"),
+                "metrics_path": state.artifacts.get("source_challenge_eval_metrics_path"),
+                "metrics": state.artifacts.get("source_challenge_eval_metrics"),
+                "judge": state.artifacts.get("source_challenge_judge_summary"),
+                "lift": state.artifacts.get("source_challenge_lift_summary"),
+                "lift_path": state.artifacts.get("source_challenge_lift_summary_path"),
+                "error": state.artifacts.get("source_challenge_eval_error"),
+            },
         },
     }
 

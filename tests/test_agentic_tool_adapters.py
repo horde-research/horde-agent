@@ -493,6 +493,34 @@ def test_build_sft_adapter_writes_text_quality(tmp_path: Path) -> None:
     assert result.artifacts["sft_text_quality_summary"]["num_records"] == 2
 
 
+def test_build_sft_adapter_does_not_create_heldout_source_eval_by_default(tmp_path: Path) -> None:
+    collected_path = tmp_path / "sft" / "collected_texts.jsonl"
+    collected_path.parent.mkdir(parents=True)
+    collected_rows = [
+        {"text": "Source A text", "group_key": "source-a", "source_excerpt": "A"},
+        {"text": "Source B text", "group_key": "source-b", "source_excerpt": "B"},
+        {"text": "Source C text", "group_key": "source-c", "source_excerpt": "C"},
+    ]
+    collected_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in collected_rows),
+        encoding="utf-8",
+    )
+    sft_tool = RecordingSftTool()
+    adapter = AgenticToolAdapter({"build_sft_dataset": sft_tool})
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={"sft_mode": "text", "sft_target_language": "English"},
+        artifacts={"collected_texts_jsonl": str(collected_path)},
+    )
+
+    result = adapter.execute_build_sft_dataset(state, ActionRequest(ActionType.BUILD_SFT_DATASET))
+
+    assert result.status == "success"
+    assert len(sft_tool.calls) == 1
+    assert result.artifacts["source_split_summary"]["split_strategy"] == "none"
+    assert "heldout_eval_sft_path" not in result.artifacts
+
+
 def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> None:
     collected_path = tmp_path / "sft" / "collected_texts.jsonl"
     collected_path.parent.mkdir(parents=True)
@@ -513,6 +541,7 @@ def test_build_sft_adapter_creates_heldout_source_eval_set(tmp_path: Path) -> No
         config={
             "sft_mode": "text",
             "sft_target_language": "English",
+            "source_eval_enable": True,
             "source_eval_ratio": 0.5,
             "source_eval_max_items": 2,
             "seed": 7,
@@ -726,7 +755,12 @@ def test_build_dataset_adapter_pushes_split_dataset_to_hf(monkeypatch, tmp_path:
     adapter = AgenticToolAdapter({"build_dataset": build_dataset_tool})
     state = PipelineState(
         run_dir=str(tmp_path),
-        config={"sft_mode": "text", "sft_target_language": "English", "hf_dataset_repo": "test-owner/test-dataset"},
+        config={
+            "sft_mode": "text",
+            "sft_target_language": "English",
+            "hf_dataset_repo": "test-owner/test-dataset",
+            "dataset_group_split": True,
+        },
         artifacts={
             "sft_path": str(tmp_path / "sft.jsonl"),
             "num_sft_examples": 10,
@@ -738,6 +772,7 @@ def test_build_dataset_adapter_pushes_split_dataset_to_hf(monkeypatch, tmp_path:
     assert result.status == "success"
     assert result.artifacts["dataset_repo_id"] == "test-owner/test-dataset"
     assert result.artifacts["hf_dataset_card_updated"] is True
+    assert build_dataset_tool.calls[0]["args"][1]["group_split"] is True
     assert calls[0]["local_path"] == str(dataset_dir)
     assert calls[0]["repo_name"] == "test-dataset"
     assert calls[0]["username"] == "test-owner"
@@ -769,6 +804,18 @@ def test_pipeline_config_syncs_training_modality_and_legacy_sft_mode(tmp_path: P
 
     assert legacy_cfg.training_modality == "image"
     assert legacy_cfg.sft_mode == "image"
+
+
+def test_pipeline_config_defaults_source_eval_to_nonblocking_disabled() -> None:
+    cfg = PipelineConfig(
+        country="Kazakhstan",
+        sft_target_language="English",
+        hf_model_id="test-model",
+    )
+
+    assert cfg.source_eval_enable is False
+    assert cfg.source_eval_blocking is False
+    assert cfg.dataset_group_split is False
 
 
 def test_pipeline_config_normalizes_image_sft_tasks() -> None:
@@ -1025,6 +1072,146 @@ def test_eval_adapter_pushes_hf_adapter_after_eval_passes(monkeypatch, tmp_path:
     assert calls[0]["username"] == "test-owner"
     assert "Evaluation Summary" in calls[0]["card_readme"]
     assert "Unsupported grounding rate" in calls[0]["card_readme"]
+
+
+def test_eval_adapter_runs_source_challenge_without_blocking_primary_eval(tmp_path: Path) -> None:
+    primary_predictions_path = tmp_path / "primary_predictions.jsonl"
+    primary_failures_path = tmp_path / "primary_failures.jsonl"
+    challenge_predictions_path = tmp_path / "challenge_predictions.jsonl"
+    challenge_failures_path = tmp_path / "challenge_failures.jsonl"
+    primary_predictions_path.write_text('{"id": 1}\n', encoding="utf-8")
+    primary_failures_path.write_text("", encoding="utf-8")
+    challenge_predictions_path.write_text('{"id": 1}\n', encoding="utf-8")
+    challenge_failures_path.write_text('{"id": 1}\n', encoding="utf-8")
+
+    primary_output = {
+        "predictions_path": str(primary_predictions_path),
+        "failures_path": str(primary_failures_path),
+        "cluster_preview": {"clusters": []},
+        "metrics": {
+            "failure_rate": 0.0,
+            "num_predictions": 1,
+            "training_health": {"gate_status": "pass"},
+            "judge": {"enabled": False},
+        },
+        "training_health": {"gate_status": "pass"},
+        "eval_metrics_path": str(tmp_path / "primary_eval_metrics.json"),
+    }
+    challenge_output = {
+        "predictions_path": str(challenge_predictions_path),
+        "failures_path": str(challenge_failures_path),
+        "cluster_preview": {"clusters": [{"label": "semantic_mismatch", "count": 1}]},
+        "metrics": {
+            "failure_rate": 1.0,
+            "num_predictions": 1,
+            "training_health": {"gate_status": "pass"},
+            "judge": {
+                "enabled": True,
+                "gate_status": "repair",
+                "quality_score": 0.0,
+                "major_failure_rate": 1.0,
+                "unsupported_grounding_rate": 1.0,
+                "failure_category_counts": {"hallucination": 1},
+            },
+        },
+        "training_health": {"gate_status": "pass"},
+        "judge_summary": {
+            "enabled": True,
+            "gate_status": "repair",
+            "quality_score": 0.0,
+            "major_failure_rate": 1.0,
+            "unsupported_grounding_rate": 1.0,
+        },
+        "eval_metrics_path": str(tmp_path / "challenge_eval_metrics.json"),
+    }
+
+    class SequenceEvalTool:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.outputs = [primary_output, challenge_output]
+
+        def execute(self, *args, **kwargs):
+            self.calls.append({"args": args, "kwargs": kwargs})
+            return self.outputs[len(self.calls) - 1]
+
+    eval_tool = SequenceEvalTool()
+    adapter = AgenticToolAdapter({"eval_model": eval_tool})
+    dataset_path = tmp_path / "dataset"
+    heldout_path = tmp_path / "heldout_eval_sft.jsonl"
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "hf_model_id": "test-model",
+            "source_eval_enable": True,
+            "source_eval_blocking": False,
+        },
+        artifacts={
+            "adapter_path": str(tmp_path / "adapter"),
+            "dataset_ref": {"kind": "hf", "data_path": str(dataset_path), "split": "train", "eval_split": "validation"},
+            "heldout_eval_sft_path": str(heldout_path),
+        },
+    )
+
+    result = adapter.execute_evaluate_model(state, ActionRequest(ActionType.EVALUATE_MODEL))
+
+    assert result.status == "success"
+    assert len(eval_tool.calls) == 2
+    assert eval_tool.calls[0]["args"][1] == str(dataset_path)
+    assert eval_tool.calls[0]["args"][2]["split"] == "validation"
+    assert eval_tool.calls[1]["args"][1] == str(heldout_path)
+    assert eval_tool.calls[1]["args"][2]["split"] == "train"
+    assert eval_tool.calls[1]["args"][2]["run_dir"].endswith("eval/attempt_0/source_challenge")
+    assert result.artifacts["eval_source_type"] == "dataset_validation"
+    assert result.artifacts["source_eval_blocking"] is False
+    assert result.artifacts["source_challenge_eval_metrics"]["failure_rate"] == 1.0
+    assert result.artifacts["source_challenge_judge_summary"]["gate_status"] == "repair"
+
+
+def test_eval_adapter_can_use_heldout_source_eval_as_blocking_primary(tmp_path: Path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    predictions_path.write_text('{"id": 1}\n', encoding="utf-8")
+    failures_path.write_text("", encoding="utf-8")
+    eval_tool = FakeTool(
+        {
+            "predictions_path": str(predictions_path),
+            "failures_path": str(failures_path),
+            "cluster_preview": {"clusters": []},
+            "metrics": {
+                "failure_rate": 0.0,
+                "num_predictions": 1,
+                "training_health": {"gate_status": "pass"},
+                "judge": {"enabled": False},
+            },
+            "training_health": {"gate_status": "pass"},
+        }
+    )
+    adapter = AgenticToolAdapter({"eval_model": eval_tool})
+    dataset_path = tmp_path / "dataset"
+    heldout_path = tmp_path / "heldout_eval_sft.jsonl"
+    state = PipelineState(
+        run_dir=str(tmp_path),
+        config={
+            "hf_model_id": "test-model",
+            "source_eval_enable": True,
+            "source_eval_blocking": True,
+        },
+        artifacts={
+            "adapter_path": str(tmp_path / "adapter"),
+            "dataset_ref": {"kind": "hf", "data_path": str(dataset_path), "split": "train", "eval_split": "validation"},
+            "heldout_eval_sft_path": str(heldout_path),
+        },
+    )
+
+    result = adapter.execute_evaluate_model(state, ActionRequest(ActionType.EVALUATE_MODEL))
+
+    assert result.status == "success"
+    assert len(eval_tool.calls) == 1
+    assert eval_tool.calls[0]["args"][1] == str(heldout_path)
+    assert eval_tool.calls[0]["args"][2]["split"] == "train"
+    assert result.artifacts["eval_source_type"] == "heldout_source_blocking"
+    assert result.artifacts["source_eval_blocking"] is True
+    assert "source_challenge_eval_metrics" not in result.artifacts
 
 
 def test_eval_adapter_does_not_push_hf_adapter_when_eval_fails(monkeypatch, tmp_path: Path) -> None:
