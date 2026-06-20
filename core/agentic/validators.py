@@ -15,6 +15,27 @@ def _path_exists(value: Any) -> bool:
     return bool(value) and Path(str(value)).exists()
 
 
+def _collection_is_placeholder_only(data_path: Any) -> bool:
+    if not _path_exists(data_path):
+        return False
+    try:
+        from datasets import load_from_disk
+
+        dataset = load_from_disk(str(data_path))
+        if len(dataset) != 1:
+            return False
+        row = dataset[0]
+    except Exception:
+        return False
+    if not isinstance(row, dict):
+        return False
+    placeholder_values = {"(no text collected)", "empty"}
+    text = str(row.get("text") or row.get("source_text") or "").strip()
+    source_id = str(row.get("source_id") or "").strip()
+    group_key = str(row.get("group_key") or "").strip()
+    return text in placeholder_values or (source_id == "empty" and group_key == "empty")
+
+
 def _flatten_queries(output: Dict[str, Any]) -> List[str]:
     nested = output.get("category_subcategory_queries") or {}
     queries: List[str] = []
@@ -92,6 +113,10 @@ def validate_collection_output(
     suggested_adjustments: Dict[str, Any] = {}
     if num_samples < min_samples:
         blocking_issues.append("num_samples_below_minimum")
+        recommended_actions.append("increase_collection_coverage")
+        suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
+    if _collection_is_placeholder_only(output.get("data_path")):
+        blocking_issues.append("placeholder_collection_row")
         recommended_actions.append("increase_collection_coverage")
         suggested_adjustments.update({"serper_results_per_query": "increase", "serper_top_results": "increase"})
     if text_filter.get("enabled") and text_filter_input > 0 and text_filter_kept == 0:

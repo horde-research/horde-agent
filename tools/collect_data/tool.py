@@ -4,7 +4,7 @@ Data collection tool -- Serper search + scrape.
 Takes search queries (from taxonomy), searches the web via Serper,
 scrapes the top pages, and returns collected text as an HF Dataset.
 
-Requires: SERPER_API_KEY env var.
+Requires: SERPER_API_KEY env var or ``serper_api_key`` in tool config.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 SERPER_SEARCH_URL = "https://google.serper.dev/search"
 SERPER_SCRAPE_URL = "https://scrape.serper.dev"
 HTTP_TIMEOUT_S = 30.0
+SERPER_ERROR_BODY_CHARS = 500
 
 EXCLUDED_DOMAINS = [
     "facebook.com", "instagram.com", "youtube.com", "tiktok.com",
@@ -56,6 +57,10 @@ EXCLUDED_DOMAINS = [
 ]
 
 _SITE_EXCLUSION_SUFFIX = " ".join(f"-site:{d}" for d in EXCLUDED_DOMAINS)
+
+
+class SerperAPIError(RuntimeError):
+    """Raised when Serper returns an API/provider failure."""
 
 
 class CollectDataTool(BaseTool):
@@ -79,7 +84,7 @@ class CollectDataTool(BaseTool):
         if not queries or not isinstance(queries, (list, tuple)):
             raise ValueError("config['queries'] must be a non-empty list[str].")
 
-        serper_key = os.getenv("SERPER_API_KEY")
+        serper_key = str(config.get("serper_api_key") or os.getenv("SERPER_API_KEY") or "").strip()
         if not serper_key:
             raise EnvironmentError("SERPER_API_KEY is required.")
         if Dataset is None:
@@ -139,19 +144,13 @@ class CollectDataTool(BaseTool):
         text_rows_after_filter = len(text_rows)
         if max_samples and max_samples > 0:
             text_rows = text_rows[:max_samples]
-        if not text_rows:
-            text_rows = [
-                {
-                    "text": "(no text collected)",
-                    "source_id": "empty",
-                    "group_key": "empty",
-                    "source_excerpt": "(no text collected)",
-                }
-            ]
 
-        dataset = Dataset.from_list(text_rows)
         dataset_dir = run_dir / "dataset"
-        dataset.save_to_disk(str(dataset_dir))
+        data_path = ""
+        if text_rows:
+            dataset = _dataset_from_text_rows(text_rows)
+            dataset.save_to_disk(str(dataset_dir))
+            data_path = str(dataset_dir)
 
         images_meta: Dict[str, Any] = {}
         if do_images:
@@ -249,8 +248,8 @@ class CollectDataTool(BaseTool):
             logger.info("Collected %d images into %s", len(image_records), images_dir)
 
         return {
-            "data_path": str(dataset_dir),
-            "num_samples": len(dataset),
+            "data_path": data_path,
+            "num_samples": len(text_rows),
             "metadata": {
                 "provider": "serper",
                 "run_dir": str(run_dir),
@@ -321,10 +320,20 @@ async def _process_query(
 
     scrape_tasks = [_scrape_page(serper_key, entry, sem) for entry in deduped]
     pages: List[Dict[str, str]] = []
+    scrape_errors: list[SerperAPIError] = []
     for coro in asyncio.as_completed(scrape_tasks):
-        page = await coro
+        try:
+            page = await coro
+        except SerperAPIError as exc:
+            scrape_errors.append(exc)
+            logger.warning("Scrape API failure for query '%s': %s", query[:60], exc)
+            continue
         if page:
             pages.append(page)
+    if deduped and not pages and scrape_errors and len(scrape_errors) == len(deduped):
+        raise SerperAPIError(
+            f"all Serper scrape requests failed for query '{query[:60]}': {scrape_errors[0]}"
+        )
 
     return query, pages
 
@@ -345,11 +354,14 @@ async def _search(
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(SERPER_SEARCH_URL, json=body, headers=headers) as resp:
+                    await _raise_for_serper_status(resp, service="search", subject=query)
                     data = await resp.json()
             return data.get("organic", [])
         except Exception as e:
             logger.warning("Search failed for '%s': %s", query[:60], e)
-            return []
+            if isinstance(e, SerperAPIError):
+                raise
+            raise SerperAPIError(f"Serper search failed for query '{query[:60]}': {e}") from e
 
 
 def _is_excluded(url: str) -> bool:
@@ -391,6 +403,7 @@ async def _scrape_page(
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(SERPER_SCRAPE_URL, json={"url": url}, headers=headers) as resp:
+                    await _raise_for_serper_status(resp, service="scrape", subject=url)
                     data = await resp.json()
             text = (data.get("text") or "").strip()
             if not text:
@@ -402,7 +415,23 @@ async def _scrape_page(
             }
         except Exception as e:
             logger.warning("Scrape failed for '%s': %s", url, e)
+            if isinstance(e, SerperAPIError):
+                raise
             return None
+
+
+async def _raise_for_serper_status(resp: aiohttp.ClientResponse, *, service: str, subject: str) -> None:
+    if resp.status < 400:
+        return
+    try:
+        body = await resp.text()
+    except Exception:
+        body = ""
+    body = " ".join(body.split())[:SERPER_ERROR_BODY_CHARS]
+    detail = f" status={resp.status}"
+    if body:
+        detail += f" body={body}"
+    raise SerperAPIError(f"Serper {service} API error for '{subject[:120]}'{detail}")
 
 
 # ─── Text extraction ─────────────────────────────────────────────────────────
@@ -427,6 +456,22 @@ def _extract_text_rows(raw: Dict[str, List[Dict[str, str]]]) -> List[Dict[str, s
                     }
                 )
     return rows
+
+
+def _dataset_from_text_rows(rows: list[dict[str, Any]]):
+    if rows:
+        return Dataset.from_list(rows)
+    return Dataset.from_dict(
+        {
+            "text": [],
+            "source_text": [],
+            "source_excerpt": [],
+            "source_url": [],
+            "source_query": [],
+            "source_id": [],
+            "group_key": [],
+        }
+    )
 
 
 def _source_id(url: str, text: str) -> str:

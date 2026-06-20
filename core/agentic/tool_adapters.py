@@ -122,6 +122,7 @@ class AgenticToolAdapter:
                     "queries": query_list,
                     "run_dir": str(Path(state.run_dir) / "collect"),
                     "google_results_per_query": cfg.get("serper_results_per_query", 10),
+                    "serper_api_key": cfg.get("serper_api_key"),
                     "top_results": cfg.get("serper_top_results", 5),
                     "concurrency": cfg.get("serper_concurrency", 50),
                     "collect_images": collect_images,

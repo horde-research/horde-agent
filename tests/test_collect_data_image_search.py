@@ -12,6 +12,7 @@ from tools.collect_data.image_search import (
     _normalize_image_record,
 )
 from tools.collect_data.tool import CollectDataTool
+from core.agentic.validators import validate_collection_output
 
 
 async def _fake_search_and_scrape(**kwargs: Any) -> dict[str, list[dict[str, str]]]:
@@ -20,10 +21,83 @@ async def _fake_search_and_scrape(**kwargs: Any) -> dict[str, list[dict[str, str
             {
                 "url": "https://example.com/article",
                 "google_snippet": "snippet",
-                "full_text": "Collected article text.",
+                "full_text": " ".join(
+                    f"Kazakh food culture ingredient{idx} tradition{idx}"
+                    for idx in range(80)
+                ),
             }
         ]
     }
+
+
+def test_collect_data_empty_results_stay_empty_and_fail_quality_gate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def fake_empty_search_and_scrape(**kwargs: Any) -> dict[str, list[dict[str, str]]]:
+        return {"kazakh food": []}
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr("tools.collect_data.tool._search_and_scrape", fake_empty_search_and_scrape)
+
+    result = CollectDataTool().execute(
+        {
+            "queries": ["kazakh food"],
+            "run_dir": str(tmp_path),
+        }
+    )
+
+    report = validate_collection_output(result)
+
+    assert result["num_samples"] == 0
+    assert result["data_path"] == ""
+    assert not report.passed
+    assert "num_samples_below_minimum" in report.blocking_issues
+    assert "data_path_missing" in report.blocking_issues
+
+
+def test_collect_data_uses_configured_serper_key(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_search_and_scrape(**kwargs: Any) -> dict[str, list[dict[str, str]]]:
+        captured["serper_key"] = kwargs["serper_key"]
+        return {"kazakh food": []}
+
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.setattr("tools.collect_data.tool._search_and_scrape", fake_search_and_scrape)
+
+    CollectDataTool().execute(
+        {
+            "queries": ["kazakh food"],
+            "run_dir": str(tmp_path),
+            "serper_api_key": "config-serper-key",
+        }
+    )
+
+    assert captured["serper_key"] == "config-serper-key"
+
+
+def test_collection_validator_rejects_legacy_placeholder_row(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    rows = [
+        {
+            "text": "(no text collected)",
+            "source_id": "empty",
+            "group_key": "empty",
+            "source_excerpt": "(no text collected)",
+        }
+    ]
+    from datasets import Dataset
+
+    Dataset.from_list(rows).save_to_disk(str(dataset_dir))
+
+    report = validate_collection_output({"data_path": str(dataset_dir), "num_samples": 1})
+
+    assert not report.passed
+    assert "placeholder_collection_row" in report.blocking_issues
 
 
 def test_serper_image_record_normalization_prefers_full_image_url() -> None:
