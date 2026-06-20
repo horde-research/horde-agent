@@ -396,6 +396,90 @@ def test_collect_data_runs_image_dedup_when_enabled(
     assert len(raw_manifest) == 2
 
 
+def test_image_dedup_manifest_replaces_raw_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def fake_collect_images_from_serper(
+        queries: list[str],
+        out_dir: Path,
+        *,
+        serper_key: str,
+        results_per_query: int,
+        concurrency: int,
+        min_width: int,
+        min_height: int,
+    ) -> list[dict[str, str]]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        kept = out_dir / "kept.jpg"
+        removed = out_dir / "removed.jpg"
+        kept.write_bytes(b"kept")
+        removed.write_bytes(b"removed")
+        return [
+            {"query": queries[0], "img_url": "https://example.com/kept.jpg", "file_path": str(kept)},
+            {"query": queries[0], "img_url": "https://example.com/removed.jpg", "file_path": str(removed)},
+        ]
+
+    def fake_deduplicate_image_records(
+        records: list[dict[str, str]],
+        *,
+        output_dir: str | Path,
+        threshold: float,
+        model_path: str,
+        model_url: str,
+        batch_size: int,
+        max_reported_pairs: int,
+        device: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "records": [records[0]],
+            "report": {
+                "schema_version": "image_dedup.v1",
+                "method": "sscd",
+                "threshold": threshold,
+                "model_path": model_path,
+                "model_url": model_url,
+                "device": device or "cpu",
+                "downloaded_model": False,
+                "num_input_records": 2,
+                "num_kept_records": 1,
+                "num_removed_records": 1,
+                "num_duplicate_clusters": 1,
+            },
+        }
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr("tools.collect_data.tool._search_and_scrape", _fake_search_and_scrape)
+    monkeypatch.setattr("tools.collect_data.tool.collect_images_from_serper", fake_collect_images_from_serper)
+    monkeypatch.setattr("tools.collect_data.tool.deduplicate_image_records", fake_deduplicate_image_records)
+
+    result = CollectDataTool().execute(
+        {
+            "queries": ["kazakh food"],
+            "run_dir": str(tmp_path),
+            "collect_images": True,
+            "image_dedup_enable": True,
+        }
+    )
+
+    metadata = result["metadata"]
+    final_manifest_path = Path(metadata["images_index"])
+    raw_manifest_path = Path(metadata["raw_images_index"])
+    final_manifest = json.loads(final_manifest_path.read_text(encoding="utf-8"))
+    raw_manifest = json.loads(raw_manifest_path.read_text(encoding="utf-8"))
+
+    assert final_manifest_path.name == "images.json"
+    assert raw_manifest_path.name == "images_raw.json"
+    assert final_manifest_path != raw_manifest_path
+    assert [record["img_url"] for record in final_manifest] == ["https://example.com/kept.jpg"]
+    assert [record["img_url"] for record in raw_manifest] == [
+        "https://example.com/kept.jpg",
+        "https://example.com/removed.jpg",
+    ]
+    assert metadata["num_images"] == 1
+    assert metadata["num_images_before_dedup"] == 2
+
+
 def test_collect_data_can_use_legacy_html_image_collection(
     monkeypatch,
     tmp_path: Path,
