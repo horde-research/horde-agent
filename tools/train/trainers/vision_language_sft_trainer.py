@@ -46,6 +46,7 @@ class VisionLanguageSFTCollator:
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         prompts: list[str] = []
         images: list[Image.Image] = []
+        prompt_prefix_lengths: list[int] = []
         for feature in features:
             messages = _normalize_messages(feature.get("messages"))
             if not isinstance(messages, list):
@@ -56,7 +57,9 @@ class VisionLanguageSFTCollator:
             if len(image_paths) > 1:
                 raise ValueError("Only one image per SFT row is supported in the first image trainer.")
             prompts.append(_apply_chat_template(self.processor, messages))
-            images.append(_load_image(image_paths[0]))
+            image = _load_image(image_paths[0])
+            images.append(image)
+            prompt_prefix_lengths.append(_assistant_prefix_token_count(self.processor, messages, image))
 
         batch = _processor_call(
             self.processor,
@@ -70,6 +73,8 @@ class VisionLanguageSFTCollator:
         pad_token_id = _pad_token_id(self.processor)
         if pad_token_id is not None:
             labels[labels == pad_token_id] = -100
+        for row_idx, prefix_len in enumerate(prompt_prefix_lengths):
+            labels[row_idx, : min(prefix_len, labels.shape[-1])] = -100
         batch["labels"] = labels
         return batch
 
@@ -260,6 +265,40 @@ def _normalize_messages(messages: Any) -> Any:
                     message["content"] = " ".join(text_parts).strip()
         normalized.append(message)
     return normalized
+
+
+def _assistant_prefix_token_count(processor, messages: list[dict[str, Any]], image: Image.Image) -> int:
+    prefix_messages = _messages_with_empty_assistant_content(messages)
+    prefix_prompt = _apply_chat_template(processor, prefix_messages)
+    prefix_batch = _processor_call(processor, prompts=[prefix_prompt], images=[image])
+    input_ids = prefix_batch.get("input_ids")
+    if input_ids is None:
+        return 0
+    attention_mask = prefix_batch.get("attention_mask")
+    pad_token_id = _pad_token_id(processor)
+    return _nonpad_length(input_ids[0], attention_mask[0] if attention_mask is not None else None, pad_token_id)
+
+
+def _messages_with_empty_assistant_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prefix: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        current = dict(message)
+        if str(current.get("role") or "").strip().lower() == "assistant":
+            current["content"] = ""
+            prefix.append(current)
+            break
+        prefix.append(current)
+    return prefix
+
+
+def _nonpad_length(input_ids: torch.Tensor, attention_mask: torch.Tensor | None, pad_token_id: int | None) -> int:
+    if attention_mask is not None:
+        return int(attention_mask.to(dtype=torch.long).sum().item())
+    if pad_token_id is not None:
+        return int((input_ids != pad_token_id).to(dtype=torch.long).sum().item())
+    return int(input_ids.shape[-1])
 
 
 def _apply_chat_template(processor, messages: list[dict[str, Any]]) -> str:

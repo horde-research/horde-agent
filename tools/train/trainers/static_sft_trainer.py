@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
-from transformers import DataCollatorForLanguageModeling, Trainer, TrainerCallback, TrainingArguments
+from transformers import Trainer, TrainerCallback, TrainingArguments, default_data_collator
 
-from core.data.modality import format_text_for_sft
+from core.data.modality import _content_to_text, extract_text_input_output, format_text_for_sft
 from core.types.pipeline_types import TrainConfig
 
 
@@ -71,14 +71,31 @@ class StaticSFTTrainer:
         self.logger.addHandler(handler)
 
     def _tokenize(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        text = format_text_for_sft(example)
-        tokens = self.tokenizer(
-            text,
-            max_length=self.config.max_seq_len,
-            truncation=True,
-            padding="max_length",
+        text, assistant_spans = _format_text_with_assistant_spans(example)
+        try:
+            tokens = self.tokenizer(
+                text,
+                max_length=self.config.max_seq_len,
+                truncation=True,
+                padding="max_length",
+                return_offsets_mapping=True,
+            )
+            offsets = tokens.pop("offset_mapping", None)
+        except TypeError:
+            tokens = self.tokenizer(
+                text,
+                max_length=self.config.max_seq_len,
+                truncation=True,
+                padding="max_length",
+            )
+            offsets = None
+        tokens["labels"] = _assistant_only_labels(
+            tokens["input_ids"],
+            offsets,
+            assistant_spans,
+            attention_mask=tokens.get("attention_mask"),
+            pad_token_id=getattr(self.tokenizer, "pad_token_id", None),
         )
-        tokens["labels"] = tokens["input_ids"].copy()
         return tokens
 
     def train(self) -> Dict[str, Any]:
@@ -121,7 +138,7 @@ class StaticSFTTrainer:
             args_kwargs["eval_strategy"] = eval_strategy_value
         args = TrainingArguments(**args_kwargs)
 
-        data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+        data_collator = default_data_collator
         callback = JsonlMetricsCallback(str(self.metrics_path))
         trainer = Trainer(
             model=self.model,
@@ -136,3 +153,69 @@ class StaticSFTTrainer:
         self.logger.info("Training finished")
         return train_result.metrics
 
+
+def _format_text_with_assistant_spans(example: Dict[str, Any]) -> tuple[str, list[tuple[int, int]]]:
+    messages = example.get("messages")
+    if isinstance(messages, list):
+        parts: list[str] = []
+        spans: list[tuple[int, int]] = []
+        cursor = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if parts:
+                parts.append("\n")
+                cursor += 1
+            role = str(message.get("role", "user"))
+            content = _content_to_text(message.get("content", ""))
+            prefix = f"<|{role}|>\n"
+            parts.append(prefix)
+            cursor += len(prefix)
+            start = cursor
+            parts.append(content)
+            cursor += len(content)
+            if role.strip().lower() == "assistant" and content.strip():
+                spans.append((start, cursor))
+        return "".join(parts), spans
+    if any(
+        example.get(key) is not None
+        for key in ("prompt", "instruction", "question", "input", "response", "output", "answer", "label")
+    ):
+        prompt, reference = extract_text_input_output(example)
+        text = f"{prompt}\n{reference}".strip()
+        if reference:
+            start = text.rfind(str(reference))
+            return text, [(start, start + len(str(reference)))] if start >= 0 else []
+        return text, []
+    text = format_text_for_sft(example)
+    return text, [(0, len(text))] if text.strip() else []
+
+
+def _assistant_only_labels(
+    input_ids: Any,
+    offsets: Any,
+    assistant_spans: list[tuple[int, int]],
+    *,
+    attention_mask: Any = None,
+    pad_token_id: int | None = None,
+) -> list[int]:
+    ids = input_ids.tolist() if hasattr(input_ids, "tolist") else list(input_ids)
+    labels = list(ids)
+    if not assistant_spans or offsets is None:
+        return _mask_padding(labels, attention_mask=attention_mask, pad_token_id=pad_token_id)
+    normalized_offsets = [tuple(offset) for offset in offsets]
+    for idx, (start, end) in enumerate(normalized_offsets):
+        keep = start != end and any(start < span_end and end > span_start for span_start, span_end in assistant_spans)
+        if not keep:
+            labels[idx] = -100
+    return _mask_padding(labels, attention_mask=attention_mask, pad_token_id=pad_token_id)
+
+
+def _mask_padding(labels: list[int], *, attention_mask: Any = None, pad_token_id: int | None = None) -> list[int]:
+    mask = list(attention_mask) if attention_mask is not None else None
+    for idx, value in enumerate(labels):
+        if (mask is not None and idx < len(mask) and int(mask[idx]) == 0) or (
+            pad_token_id is not None and value == pad_token_id
+        ):
+            labels[idx] = -100
+    return labels

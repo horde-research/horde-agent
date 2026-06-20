@@ -26,14 +26,34 @@ class FakeProcessor:
 
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
         self.templates.append(messages)
-        return "USER: <image> Describe\nASSISTANT: Answer"
+        assistant_text = ""
+        for message in messages:
+            if message.get("role") == "assistant":
+                content = message.get("content")
+                if isinstance(content, list):
+                    assistant_text = " ".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                else:
+                    assistant_text = str(content or "")
+        return f"USER: <image> Describe\nASSISTANT: {assistant_text}".rstrip()
 
     def __call__(self, **kwargs):
         self.images = kwargs["images"]
+        rows = []
+        masks = []
+        for text in kwargs["text"]:
+            if text.endswith("ASSISTANT:"):
+                rows.append([1, 2, 0])
+                masks.append([1, 1, 0])
+            elif "Red" in text:
+                rows.append([1, 3, 4])
+                masks.append([1, 1, 1])
+            else:
+                rows.append([1, 2, 5])
+                masks.append([1, 1, 1])
         return {
-            "input_ids": torch.tensor([[1, 2, 0], [1, 3, 4]], dtype=torch.long),
-            "attention_mask": torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.long),
-            "pixel_values": torch.zeros((2, 3, 8, 8), dtype=torch.float32),
+            "input_ids": torch.tensor(rows, dtype=torch.long),
+            "attention_mask": torch.tensor(masks, dtype=torch.long),
+            "pixel_values": torch.zeros((len(rows), 3, 8, 8), dtype=torch.float32),
         }
 
 
@@ -95,7 +115,7 @@ def test_vision_language_collator_loads_existing_image_sft_rows(tmp_path: Path) 
 
     assert batch["input_ids"].shape == (2, 3)
     assert batch["pixel_values"].shape == (2, 3, 8, 8)
-    assert batch["labels"].tolist() == [[1, 2, -100], [1, 3, 4]]
+    assert batch["labels"].tolist() == [[-100, -100, 5], [-100, -100, 4]]
     assert len(processor.images) == 2
 
 
