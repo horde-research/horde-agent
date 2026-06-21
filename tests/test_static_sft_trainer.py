@@ -34,6 +34,16 @@ class CharOffsetTokenizer:
         return payload
 
 
+class ChatTemplateTokenizer(CharOffsetTokenizer):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):  # noqa: ANN001
+        parts = []
+        for message in messages:
+            parts.append(f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>")
+        if add_generation_prompt:
+            parts.append("<|im_start|>assistant\n")
+        return "\n".join(parts)
+
+
 def test_static_sft_tokenize_masks_user_prompt_tokens(tmp_path) -> None:
     tokenizer = CharOffsetTokenizer()
     trainer = StaticSFTTrainer(
@@ -60,3 +70,31 @@ def test_static_sft_tokenize_masks_user_prompt_tokens(tmp_path) -> None:
     assert encoded["labels"][answer_pos] == encoded["input_ids"][answer_pos]
     assert encoded["labels"][answer_pos + len("Answer") - 1] == encoded["input_ids"][answer_pos + len("Answer") - 1]
     assert encoded["labels"][-1] == -100
+
+
+def test_static_sft_tokenize_uses_chat_template_when_available(tmp_path) -> None:
+    tokenizer = ChatTemplateTokenizer()
+    trainer = StaticSFTTrainer(
+        model=None,
+        tokenizer=tokenizer,
+        train_dataset=[],
+        eval_dataset=None,
+        out_dir=str(tmp_path),
+        config=TrainConfig(max_seq_len=128),
+    )
+
+    encoded = trainer._tokenize(
+        {
+            "messages": [
+                {"role": "user", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+            ]
+        }
+    )
+
+    assert "<|im_start|>user" in tokenizer.last_text
+    assert "<|im_start|>assistant" in tokenizer.last_text
+    question_pos = tokenizer.last_text.index("Question")
+    answer_pos = tokenizer.last_text.index("Answer")
+    assert encoded["labels"][question_pos] == -100
+    assert encoded["labels"][answer_pos] == encoded["input_ids"][answer_pos]

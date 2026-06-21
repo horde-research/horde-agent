@@ -34,7 +34,8 @@ def run_inference(
     input_max_length = _safe_input_max_length(tokenizer, max_input_tokens)
     for idx, example in enumerate(sample):
         prompt, reference = extract_text_input_output(example)
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=input_max_length)
+        rendered_prompt = _render_text_prompt(tokenizer, example.get("messages"), prompt)
+        inputs = tokenizer(rendered_prompt, return_tensors="pt", truncation=True, max_length=input_max_length)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         with torch.no_grad():
             output_ids = model.generate(
@@ -46,7 +47,7 @@ def run_inference(
         generated_ids = output_ids[0][prompt_len:] if prompt_len else output_ids[0]
         pred_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         if not pred_text:
-            pred_text = _strip_prompt_echo(tokenizer.decode(output_ids[0], skip_special_tokens=True), prompt)
+            pred_text = _strip_prompt_echo(tokenizer.decode(output_ids[0], skip_special_tokens=True), rendered_prompt)
         results.append(
             {
                 "id": idx,
@@ -215,6 +216,23 @@ def _prediction_metadata(example: Dict[str, Any]) -> Dict[str, Any]:
         "source_image_url",
     )
     return {key: example[key] for key in keys if example.get(key) not in (None, "", [], {})}
+
+
+def _render_text_prompt(tokenizer: Any, messages: Any, fallback_prompt: str) -> str:
+    user_messages = []
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "user":
+                user_messages.append(message)
+                break
+    if user_messages and hasattr(tokenizer, "apply_chat_template"):
+        try:
+            rendered = tokenizer.apply_chat_template(user_messages, tokenize=False, add_generation_prompt=True)
+            if isinstance(rendered, str) and rendered.strip():
+                return rendered
+        except Exception:
+            pass
+    return fallback_prompt
 
 
 def _strip_prompt_echo(generated: str, prompt: str) -> str:

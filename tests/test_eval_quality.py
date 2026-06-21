@@ -35,6 +35,21 @@ class FakeTextTokenizer:
         return " ".join(str(token) for token in tokens)
 
 
+class ChatTemplateTextTokenizer(FakeTextTokenizer):
+    def __init__(self) -> None:
+        self.rendered_texts: list[str] = []
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):  # noqa: ANN001
+        rendered = "".join(f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n" for message in messages)
+        if add_generation_prompt:
+            rendered += "<|im_start|>assistant\n"
+        return rendered
+
+    def __call__(self, text, **kwargs):
+        self.rendered_texts.append(text)
+        return super().__call__(text, **kwargs)
+
+
 class HugeMaxTextTokenizer(FakeTextTokenizer):
     model_max_length = 10**30
 
@@ -460,6 +475,32 @@ def test_text_eval_uses_safe_input_length_for_tokenizer_sentinel(tmp_path: Path)
     )
 
     assert tokenizer.max_lengths == [2048]
+
+
+def test_text_eval_uses_chat_template_generation_prompt(tmp_path: Path) -> None:
+    tokenizer = ChatTemplateTextTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "What is the capital of France?"},
+                    {"role": "assistant", "content": "Paris."},
+                ]
+            }
+        ]
+    )
+
+    run_inference(
+        model=FakeTextModel(),
+        tokenizer=tokenizer,
+        dataset=dataset,
+        out_dir=str(tmp_path),
+        max_samples=1,
+        max_new_tokens=2,
+    )
+
+    assert tokenizer.rendered_texts
+    assert tokenizer.rendered_texts[0] == "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
 
 
 def test_eval_model_image_path_uses_vlm_loader(monkeypatch, tmp_path: Path) -> None:

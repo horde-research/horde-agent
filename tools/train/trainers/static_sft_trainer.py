@@ -71,7 +71,7 @@ class StaticSFTTrainer:
         self.logger.addHandler(handler)
 
     def _tokenize(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        text, assistant_spans = _format_text_with_assistant_spans(example)
+        text, assistant_spans = _format_text_with_assistant_spans(example, tokenizer=self.tokenizer)
         try:
             tokens = self.tokenizer(
                 text,
@@ -154,9 +154,14 @@ class StaticSFTTrainer:
         return train_result.metrics
 
 
-def _format_text_with_assistant_spans(example: Dict[str, Any]) -> tuple[str, list[tuple[int, int]]]:
+def _format_text_with_assistant_spans(example: Dict[str, Any], *, tokenizer: Any = None) -> tuple[str, list[tuple[int, int]]]:
     messages = example.get("messages")
     if isinstance(messages, list):
+        rendered = _render_chat_template(tokenizer, messages, add_generation_prompt=False)
+        if rendered:
+            spans = _assistant_spans_in_rendered_chat(rendered, messages)
+            if spans:
+                return rendered, spans
         parts: list[str] = []
         spans: list[tuple[int, int]] = []
         cursor = 0
@@ -189,6 +194,41 @@ def _format_text_with_assistant_spans(example: Dict[str, Any]) -> tuple[str, lis
         return text, []
     text = format_text_for_sft(example)
     return text, [(0, len(text))] if text.strip() else []
+
+
+def _render_chat_template(tokenizer: Any, messages: list[Any], *, add_generation_prompt: bool) -> str:
+    if tokenizer is None or not hasattr(tokenizer, "apply_chat_template"):
+        return ""
+    try:
+        rendered = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+    except Exception:
+        return ""
+    return rendered if isinstance(rendered, str) else ""
+
+
+def _assistant_spans_in_rendered_chat(rendered: str, messages: list[Any]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip().lower()
+        if role != "assistant":
+            continue
+        content = _content_to_text(message.get("content", ""))
+        if not content:
+            continue
+        start = rendered.find(content, cursor)
+        if start < 0:
+            return []
+        end = start + len(content)
+        spans.append((start, end))
+        cursor = end
+    return spans
 
 
 def _assistant_only_labels(
