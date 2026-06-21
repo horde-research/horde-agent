@@ -126,6 +126,147 @@ def test_source_quality_accumulates_kept_sources_across_attempts(tmp_path: Path)
     assert sorted(row["group_key"] for row in filtered) == ["one", "two"]
 
 
+def test_source_quality_embedding_alignment_drops_query_content_mismatch(tmp_path: Path) -> None:
+    data_path = _save_dataset(
+        tmp_path / "raw",
+        [
+            {
+                "text": "Kazakh yurt construction uses the shanyrak crown and kerege lattice walls.",
+                "source_url": "https://good.example/yurt",
+                "source_query": "Kazakh yurt shanyrak",
+                "group_key": "good",
+            },
+            {
+                "text": "Additional education teachers develop communicative competence in schools.",
+                "source_url": "https://mismatch.example/paper",
+                "source_query": "Kazakh epic poetry dombra kobyz",
+                "group_key": "bad",
+            },
+        ],
+    )
+
+    def fake_embeddings(texts: list[str], model_id: str) -> list[list[float]]:  # noqa: ARG001
+        vectors: list[list[float]] = []
+        for text in texts:
+            lowered = text.lower()
+            if "additional education" in lowered or "teachers" in lowered:
+                vectors.append([0.0, 1.0])
+            else:
+                vectors.append([1.0, 0.0])
+        return vectors
+
+    result = assess_text_source_quality(
+        data_path=data_path,
+        output_dir=tmp_path / "source_quality",
+        taxonomy={"categories": ["Kazakh yurt"]},
+        queries=["Kazakh yurt shanyrak", "Kazakh epic poetry dombra kobyz"],
+        config={
+            "source_quality_oracle_enable": False,
+            "source_quality_accumulate_kept_sources": False,
+            "source_quality_min_quality_score": 0.0,
+            "source_quality_enable_embeddings": True,
+            "source_quality_embedding_fn": fake_embeddings,
+            "source_quality_embedding_hard_min_similarity": 0.35,
+        },
+    )
+
+    filtered = load_from_disk(result["filtered_data_path"])
+    assert [row["group_key"] for row in filtered] == ["good"]
+    decisions = [
+        json.loads(line)
+        for line in Path(result["decisions_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    bad = next(row for row in decisions if row["domain"] == "mismatch.example")
+    assert bad["source_query_embedding_similarity"] == 0.0
+    assert "source_query_embedding_alignment_below_hard_min" in bad["reasons"]
+
+
+def test_source_quality_drops_stock_search_pages_without_oracle(tmp_path: Path) -> None:
+    data_path = _save_dataset(
+        tmp_path / "raw",
+        [
+            {
+                "text": "Shyrdak Images Browse stock photos vectors free trial Did you mean: shrank, shirataki",
+                "source_url": "https://stock.adobe.com/search?k=shyrdak",
+                "source_query": "how to make a traditional Kazakh shyrdak rug",
+                "group_key": "stock",
+            },
+            {
+                "text": "A shyrdak is a traditional felt carpet made from patterned wool felt.",
+                "source_url": "https://good.example/shyrdak",
+                "source_query": "how to make a traditional Kazakh shyrdak rug",
+                "group_key": "good",
+            },
+        ],
+    )
+
+    result = assess_text_source_quality(
+        data_path=data_path,
+        output_dir=tmp_path / "source_quality",
+        taxonomy={"categories": ["Shyrdak"]},
+        queries=["how to make a traditional Kazakh shyrdak rug"],
+        config={
+            "source_quality_oracle_enable": False,
+            "source_quality_accumulate_kept_sources": False,
+            "source_quality_min_quality_score": 0.0,
+        },
+    )
+
+    filtered = load_from_disk(result["filtered_data_path"])
+    assert [row["group_key"] for row in filtered] == ["good"]
+    decisions = [
+        json.loads(line)
+        for line in Path(result["decisions_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    stock = next(row for row in decisions if row["domain"] == "stock.adobe.com")
+    assert "known_stock_domain" in stock["page_type_flags"]
+    assert any(reason.startswith("page_type:") for reason in stock["reasons"])
+
+
+def test_source_quality_revalidates_accumulated_sources(tmp_path: Path) -> None:
+    out_dir = tmp_path / "source_quality"
+    out_dir.mkdir()
+    stale = {
+        "text": "Shyrdak Images Browse stock photos vectors free trial Did you mean: shrank",
+        "source_url": "https://stock.adobe.com/search?k=shyrdak",
+        "source_query": "traditional shyrdak",
+        "group_key": "stale-stock",
+        "source_quality_keep": True,
+        "source_quality_score": 0.9,
+    }
+    (out_dir / "accepted_sources.jsonl").write_text(json.dumps(stale) + "\n", encoding="utf-8")
+    data_path = _save_dataset(
+        tmp_path / "raw",
+        [
+            {
+                "text": "A shyrdak is a traditional felt carpet made from patterned wool felt.",
+                "source_url": "https://good.example/shyrdak",
+                "source_query": "traditional shyrdak",
+                "group_key": "good",
+            }
+        ],
+    )
+
+    result = assess_text_source_quality(
+        data_path=data_path,
+        output_dir=out_dir,
+        taxonomy={"categories": ["Shyrdak"]},
+        queries=["traditional shyrdak"],
+        config={
+            "source_quality_oracle_enable": False,
+            "source_quality_accumulate_kept_sources": True,
+            "source_quality_min_quality_score": 0.0,
+        },
+    )
+
+    filtered = load_from_disk(result["filtered_data_path"])
+    assert [row["group_key"] for row in filtered] == ["good"]
+    assert result["num_previous_accepted_rows_removed"] == 1
+    assert result["summary"]["num_previous_accepted_rows_removed"] == 1
+
+
 def test_source_quality_validator_blocks_insufficient_post_filter_corpus(tmp_path: Path) -> None:
     report = validate_source_quality_output(
         {

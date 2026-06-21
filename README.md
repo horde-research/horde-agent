@@ -13,8 +13,8 @@ The stages do the following:
 - `generate_taxonomy`: builds culture/domain categories, subcategories, text search queries, and optional language-agnostic image taxonomy slots.
 - `collect_data`: uses Serper text search and, when enabled, Serper Google Images to collect raw text and image data.
 - `assess_coverage_and_refine_queries`: checks whether collected text/images cover enough queries and image taxonomy slots; if not, it routes back to collection with refined text queries or targeted image query specs.
-- `assess_source_quality`: for text runs, profiles and clusters candidate source rows, optionally asks an LLM oracle for cluster/domain filtering policy, applies deterministic filtering, accumulates accepted rows across recovery attempts, and blocks SFT until the post-filter corpus is sufficient.
-- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM and validates row schema/content before training.
+- `assess_source_quality`: for text runs, profiles and clusters candidate source rows, applies deterministic low-value page detection, can score source-query/content alignment with Qwen embeddings, optionally asks an LLM oracle for cluster/domain filtering policy, accumulates accepted rows across recovery attempts, and blocks SFT until the post-filter corpus is sufficient.
+- `build_sft_dataset`: converts collected text or images into SFT examples using the configured LLM, can filter text SFT rows with embedding-based answerability checks, and validates row schema/content before training.
 - `build_dataset`: builds a Hugging Face dataset with `train` and `validation` splits; when `HF_DATASET_REPO` is configured, the split dataset is pushed to Hugging Face Hub after this stage passes.
 - `train_model`: runs text LoRA SFT or image-text LoRA SFT, unless debug stubbing is enabled.
 - `evaluate_model`: checks train-health logs, runs deterministic validation evaluation, and can optionally run a categorical LLM-as-judge quality gate; when `HF_ADAPTER_REPO` is configured, the real LoRA adapter is pushed only after this stage passes.
@@ -88,6 +88,8 @@ Optional but common:
 - `LANGSMITH_PROJECT`: defaults to `horde-agent`.
 - `SFT_REUSE_ANNOTATIONS=true`: reuse cached text SFT annotations across collection recovery attempts. Enabled by default.
 - `TEXT_QUALITY_ENABLE_EMBEDDINGS=true`: enable embedding near-duplicate diagnostics. The default model is `Qwen/Qwen3-Embedding-0.6B`; leave this disabled for quick smoke runs if you do not want an extra model download.
+- `SOURCE_QUALITY_ENABLE_EMBEDDINGS=true`: enable Qwen source-query/content alignment during source quality filtering.
+- `SFT_ANSWERABILITY_ENABLE=true`: enable Qwen answerability filtering after text SFT generation.
 
 For a scoped run, do not fold the scope into `--country`. Use:
 
@@ -277,8 +279,8 @@ The filter writes `collect/text_filter_report.json`. If every real page is filte
 
 For text `full_agentic` runs, collected rows are candidates until `assess_source_quality` passes. The stage writes:
 
-- `source_quality/source_quality_profile.json`: per-row deterministic features.
-- `source_quality/source_quality_clusters.jsonl`: compact domain/path/relevance cluster summaries.
+- `source_quality/source_quality_profile.json`: per-row deterministic features, low-value page-type flags, and optional embedding alignment scores.
+- `source_quality/source_quality_clusters.jsonl`: compact domain/path/relevance/page-type/alignment cluster summaries.
 - `source_quality/source_quality_oracle_payload.json`: the aggregate-only payload sent to the oracle.
 - `source_quality/source_quality_policy.json`: deterministic plus optional oracle policy.
 - `source_quality/source_quality_decisions.jsonl`: per-row keep/drop decisions and reasons.
@@ -294,9 +296,35 @@ SOURCE_QUALITY_MIN_KEPT_ROWS=20
 SOURCE_QUALITY_MIN_SOURCE_GROUPS=5
 SOURCE_QUALITY_MAX_DOMAIN_SHARE=0.75
 SOURCE_QUALITY_MIN_AVG_SCORE=0.20
+SOURCE_QUALITY_MIN_QUALITY_SCORE=0.20
+SOURCE_QUALITY_DROP_LOW_VALUE_PAGES=true
+SOURCE_QUALITY_DROP_DOCUMENT_WRAPPERS=true
+SOURCE_QUALITY_ENABLE_EMBEDDINGS=false
+SOURCE_QUALITY_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+SOURCE_QUALITY_EMBEDDING_HARD_MIN_SIMILARITY=0.35
+SOURCE_QUALITY_EMBEDDING_SOFT_MIN_SIMILARITY=0.50
 ```
 
+Low-value page detection is deterministic and does not call an LLM. It catches known stock-photo/search pages, search/listing URL shapes, search-suggestion text, and document-wrapper pages such as Scribd/Slideshare-style wrappers. Embedding alignment is opt-in because it loads the embedding model; when enabled, the stage compares the source query plus country/focus against the extracted source text and drops hard mismatches.
+
 If the oracle is unavailable, the stage records a warning and falls back to deterministic policy. If filtering leaves too few rows, too few source groups, excessive domain concentration, or low average source quality, recovery routes back to collection with more candidates and oracle-suggested query refinements instead of proceeding to SFT.
+
+## SFT Answerability Gate
+
+Text SFT examples can be filtered after annotation using local embedding checks against the source excerpt. This is separate from the LLM source-quality oracle and does not call an LLM.
+
+```bash
+SFT_ANSWERABILITY_ENABLE=true
+SFT_ANSWERABILITY_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+SFT_ANSWERABILITY_MIN_ANSWER_SOURCE_SIMILARITY=0.35
+SFT_ANSWERABILITY_MIN_QUESTION_SOURCE_SIMILARITY=0.20
+SFT_ANSWERABILITY_BORDERLINE_ANSWER_SOURCE_SIMILARITY=0.45
+SFT_ANSWERABILITY_DROP_LOW_VALUE_PAGES=true
+SFT_ANSWERABILITY_DROP_DOCUMENT_WRAPPERS=true
+SFT_ANSWERABILITY_MAX_EXAMPLES=0
+```
+
+The report is written to `sft/answerability_report.json`. Rows are dropped when the answer is poorly supported by the source excerpt, when both question and answer are weakly related to the source, or when the source page is a deterministic low-value page type. `SFT_ANSWERABILITY_MAX_EXAMPLES=0` means score all generated examples; set a positive number for a capped audit.
 
 ## Text Quality Diagnostics
 
@@ -339,7 +367,7 @@ Local artifacts are written under `RUN_DIR`:
 - `agent_trace.jsonl`: stage trajectory.
 - `decision_history.jsonl`, `quality_history.jsonl`, `result_history.jsonl`, `config_history.jsonl`: inspectable controller history.
 - `collect/`: raw collection output, text filter report, metadata, collection text-quality diagnostics, and optional image dedup reports.
-- `sft/`: merged text source registry, annotation cache, train-source annotations/SFT JSONL, held-out source eval JSONL when available, and SFT text-quality diagnostics.
+- `sft/`: merged text source registry, annotation cache, train-source annotations/SFT JSONL, optional answerability report, held-out source eval JSONL when available, and SFT text-quality diagnostics.
 - `dataset/`: Hugging Face train/validation dataset.
 - `eval/attempt_N/`: adapter validation outputs, base-model validation outputs under `base/`, deterministic diagnostics, clustered failures, judge artifacts, and lift summary for each evaluation attempt.
 - Final report path is logged at the end when report generation succeeds.
@@ -368,6 +396,8 @@ PYENV_VERSION=agents pyenv exec python -m pytest \
   tests/test_image_training.py \
   tests/test_text_quality.py \
   tests/test_text_filter.py \
+  tests/test_source_quality.py \
+  tests/test_sft_answerability.py \
   tests/test_image_dedup.py
 ```
 

@@ -374,6 +374,32 @@ class AgenticToolAdapter:
                 tool_config["reuse_annotations"] = _as_bool(cfg.get("sft_reuse_annotations", True))
                 tool_config["annotation_cache_path"] = str(sft_dir / "text_annotation_cache.jsonl")
                 tool_config["annotation_cache_metadata"] = _text_annotation_cache_signature(cfg)
+                tool_config["answerability_enable"] = _as_bool(cfg.get("sft_answerability_enable", False))
+                tool_config["answerability_report_path"] = str(sft_dir / "answerability_report.json")
+                tool_config["answerability_embedding_model"] = cfg.get(
+                    "sft_answerability_embedding_model",
+                    cfg.get("text_quality_embedding_model"),
+                )
+                tool_config["answerability_min_answer_source_similarity"] = cfg.get(
+                    "sft_answerability_min_answer_source_similarity",
+                    0.35,
+                )
+                tool_config["answerability_min_question_source_similarity"] = cfg.get(
+                    "sft_answerability_min_question_source_similarity",
+                    0.20,
+                )
+                tool_config["answerability_borderline_answer_source_similarity"] = cfg.get(
+                    "sft_answerability_borderline_answer_source_similarity",
+                    0.45,
+                )
+                tool_config["answerability_max_examples"] = cfg.get("sft_answerability_max_examples", 0)
+                tool_config["answerability_drop_low_value_pages"] = _as_bool(
+                    cfg.get("sft_answerability_drop_low_value_pages", True)
+                )
+                tool_config["answerability_drop_document_wrappers"] = _as_bool(
+                    cfg.get("sft_answerability_drop_document_wrappers", True)
+                )
+                tool_config["answerability_max_reported_rows"] = cfg.get("sft_answerability_max_reported_rows", 100)
 
             output = self.tools["build_sft_dataset"].execute(tool_config)
             report = validate_sft_output(output)
@@ -385,6 +411,7 @@ class AgenticToolAdapter:
                     "input_jsonl": source_split["eval_input_jsonl"],
                     "output_annotations": str(sft_dir / "heldout_eval_annotations.jsonl"),
                     "output_sft": str(sft_dir / "heldout_eval_sft.jsonl"),
+                    "answerability_report_path": str(sft_dir / "heldout_eval_answerability_report.json"),
                 }
                 try:
                     eval_output = self.tools["build_sft_dataset"].execute(eval_tool_config)
@@ -394,6 +421,8 @@ class AgenticToolAdapter:
                         "heldout_eval_annotations_path": eval_output.get("annotations_path"),
                         "heldout_eval_num_examples": eval_output.get("num_examples"),
                         "heldout_eval_annotation_reuse_summary": eval_output.get("annotation_reuse"),
+                        "heldout_eval_answerability_summary": eval_output.get("answerability"),
+                        "heldout_eval_answerability_report_path": eval_output.get("answerability_report_path"),
                     }
                 except Exception as exc:
                     logger.warning("Failed to build held-out source eval set: %s", exc)
@@ -413,6 +442,8 @@ class AgenticToolAdapter:
                 "source_registry_summary": source_registry.get("summary") if mode == "text" else None,
                 "annotation_cache_path": output.get("annotation_cache_path"),
                 "annotation_reuse_summary": output.get("annotation_reuse"),
+                "sft_answerability_summary": output.get("answerability"),
+                "sft_answerability_report_path": output.get("answerability_report_path"),
                 "source_split_summary": source_split.get("summary") if mode == "text" else None,
                 **heldout_eval_artifacts,
                 **text_quality_artifacts,

@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 from datasets import Dataset
 
+from core.data.source_page_types import detect_page_type_flags, hard_drop_page_type_flags
+from core.data.text_quality import DEFAULT_EMBEDDING_MODEL, _cosine, _embed_texts
 from core.data.hf_dataset import load_dataset_from_path
 from core.llm import LLMClient, LLMRequest
 from core.redaction import sanitize_secret_text
@@ -82,7 +84,18 @@ def assess_text_source_quality(
     taxonomy_terms = _taxonomy_terms(taxonomy or {}, query_list)
     taxonomy_terms.update(_tokens(focus))
 
-    profile_rows = profile_source_rows(rows, queries=query_list, taxonomy_terms=taxonomy_terms)
+    profile_rows = profile_source_rows(
+        rows,
+        queries=query_list,
+        taxonomy_terms=taxonomy_terms,
+        target_entity=target_entity,
+        focus=focus,
+        enable_embedding_alignment=_bool_cfg(cfg, "source_quality_enable_embeddings", False),
+        embedding_model=str(cfg.get("source_quality_embedding_model") or DEFAULT_EMBEDDING_MODEL),
+        embedding_max_rows=_int_cfg(cfg, "source_quality_embedding_max_rows", 512),
+        embedding_text_chars=_int_cfg(cfg, "source_quality_embedding_text_chars", 1500),
+        embedding_fn=cfg.get("source_quality_embedding_fn"),
+    )
     clusters = cluster_source_rows(
         profile_rows,
         max_clusters=_int_cfg(cfg, "source_quality_max_clusters", 40),
@@ -102,11 +115,12 @@ def assess_text_source_quality(
 
     filtered_rows, decisions = apply_source_quality_policy(rows, profile_rows, clusters, policy, cfg)
     accepted_path = out_dir / "accepted_sources.jsonl"
-    previous_accepted_rows = (
+    previous_accepted_rows_raw = (
         _read_jsonl(accepted_path)
         if _bool_cfg(cfg, "source_quality_accumulate_kept_sources", True)
         else []
     )
+    previous_accepted_rows, previous_removed_rows = _filter_previous_accepted_rows(previous_accepted_rows_raw, cfg)
     accepted_rows = _merge_source_rows(previous_accepted_rows, filtered_rows)
     report = build_source_quality_report(
         rows=rows,
@@ -118,6 +132,7 @@ def assess_text_source_quality(
         oracle_payload=oracle_payload,
         current_filtered_rows=filtered_rows,
         previous_accepted_rows=previous_accepted_rows,
+        previous_removed_rows=previous_removed_rows,
     )
 
     profile_path = out_dir / "source_quality_profile.json"
@@ -160,6 +175,7 @@ def assess_text_source_quality(
         "num_input_rows": len(rows),
         "num_current_kept_rows": len(filtered_rows),
         "num_previous_accepted_rows": len(previous_accepted_rows),
+        "num_previous_accepted_rows_removed": len(previous_removed_rows),
         "num_kept_rows": len(accepted_rows),
         "num_removed_rows": len(rows) - len(filtered_rows),
         "summary": summary,
@@ -174,18 +190,26 @@ def profile_source_rows(
     *,
     queries: Iterable[str],
     taxonomy_terms: set[str],
+    target_entity: str = "",
+    focus: str = "",
+    enable_embedding_alignment: bool = False,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_max_rows: int = 512,
+    embedding_text_chars: int = 1500,
+    embedding_fn: Any = None,
 ) -> list[dict[str, Any]]:
+    row_list = list(rows)
     query_tokens_by_text = [_tokens(query) for query in queries]
     profiled: list[dict[str, Any]] = []
     text_hash_counts: Counter[str] = Counter()
     normalized_texts: list[str] = []
 
-    for row in rows:
+    for row in row_list:
         normalized = _normalize_text(str(row.get("text") or row.get("source_text") or ""))
         normalized_texts.append(normalized)
         text_hash_counts[_text_hash(normalized)] += 1
 
-    for idx, row in enumerate(rows):
+    for idx, row in enumerate(row_list):
         text = str(row.get("text") or row.get("source_text") or "")
         normalized = normalized_texts[idx]
         tokens = _tokens(normalized)
@@ -202,7 +226,9 @@ def profile_source_rows(
         unique_ratio = len(token_set) / words if words else 0.0
         boilerplate_score = _boilerplate_score(text, tokens, path_template)
         low_value_path = _low_value_path(path_template)
+        page_type_flags = detect_page_type_flags(url, text)
         length_score = min(chars / 1500.0, 1.0) if chars else 0.0
+        page_type_penalty = 0.20 if hard_drop_page_type_flags(page_type_flags) else 0.0
         quality_score = _clamp(
             0.30 * length_score
             + 0.25 * unique_ratio
@@ -210,6 +236,7 @@ def profile_source_rows(
             + 0.20 * min(query_similarity * 4.0, 1.0)
             - 0.25 * boilerplate_score
             - (0.15 if low_value_path else 0.0)
+            - page_type_penalty
         )
         text_hash = _text_hash(normalized)
         profiled.append(
@@ -227,6 +254,9 @@ def profile_source_rows(
                 "taxonomy_similarity": round(taxonomy_similarity, 4),
                 "boilerplate_score": round(boilerplate_score, 4),
                 "low_value_path": low_value_path,
+                "page_type_flags": page_type_flags,
+                "source_query_embedding_similarity": None,
+                "source_query_embedding_error": None,
                 "quality_score": round(quality_score, 4),
                 "text_hash": text_hash,
                 "exact_duplicate_count": text_hash_counts[text_hash],
@@ -235,6 +265,17 @@ def profile_source_rows(
                 "cluster_id": "",
             }
         )
+    _add_embedding_alignment(
+        profiled,
+        row_texts=[str(row.get("text") or row.get("source_text") or "") for row in row_list],
+        target_entity=target_entity,
+        focus=focus,
+        enabled=enable_embedding_alignment,
+        model_id=embedding_model,
+        max_rows=embedding_max_rows,
+        text_chars=embedding_text_chars,
+        embedding_fn=embedding_fn,
+    )
     return profiled
 
 
@@ -277,6 +318,56 @@ def cluster_source_rows(
     return kept
 
 
+def _add_embedding_alignment(
+    profile_rows: list[dict[str, Any]],
+    *,
+    row_texts: list[str],
+    target_entity: str,
+    focus: str,
+    enabled: bool,
+    model_id: str,
+    max_rows: int,
+    text_chars: int,
+    embedding_fn: Any = None,
+) -> None:
+    if not enabled or not profile_rows or max_rows <= 0:
+        return
+
+    candidate_indexes = [
+        idx
+        for idx, row in enumerate(profile_rows[:max_rows])
+        if str(row.get("source_query") or "").strip() and str(row_texts[idx] if idx < len(row_texts) else "").strip()
+    ]
+    if not candidate_indexes:
+        return
+
+    texts: list[str] = []
+    for idx in candidate_indexes:
+        row = profile_rows[idx]
+        query = " ".join(
+            part
+            for part in (
+                str(target_entity or "").strip(),
+                str(focus or "").strip(),
+                str(row.get("source_query") or "").strip(),
+            )
+            if part
+        )
+        source_text = _excerpt_chars(row_texts[idx], max(200, text_chars))
+        texts.extend([query, source_text])
+
+    try:
+        embed = embedding_fn or _embed_texts
+        embeddings = embed(texts, model_id=model_id)
+        for pos, idx in enumerate(candidate_indexes):
+            score = _cosine(embeddings[pos * 2], embeddings[pos * 2 + 1])
+            profile_rows[idx]["source_query_embedding_similarity"] = round(score, 4)
+    except Exception as exc:  # pragma: no cover - depends on optional model downloads/devices
+        error = sanitize_secret_text(f"{type(exc).__name__}: {exc}")
+        for idx in candidate_indexes:
+            profile_rows[idx]["source_query_embedding_error"] = error
+
+
 def build_oracle_payload(
     clusters: list[dict[str, Any]],
     *,
@@ -312,11 +403,15 @@ def build_deterministic_policy(clusters: list[dict[str, Any]], cfg: Mapping[str,
         avg_boilerplate = float(cluster.get("avg_boilerplate_score") or 0.0)
         avg_chars = float(cluster.get("avg_chars") or 0.0)
         low_value_path_share = float(cluster.get("low_value_path_share") or 0.0)
+        hard_page_type_share = float(cluster.get("hard_page_type_share") or 0.0)
         decision = "keep"
         reasons: list[str] = []
         if avg_chars <= 0:
             decision = "drop"
             reasons.append("empty_cluster")
+        elif hard_page_type_share >= 0.50:
+            decision = "drop"
+            reasons.append("hard_page_type_cluster")
         elif avg_boilerplate >= 0.75:
             decision = "drop"
             reasons.append("high_boilerplate_cluster")
@@ -411,6 +506,10 @@ def apply_source_quality_policy(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     keep_borderline = bool(policy.get("keep_borderline", _bool_cfg(cfg, "source_quality_keep_borderline", True)))
     min_score = _float_cfg(policy, "min_quality_score", _float_cfg(cfg, "source_quality_min_quality_score", 0.20))
+    alignment_hard_min = _float_cfg(cfg, "source_quality_embedding_hard_min_similarity", 0.35)
+    alignment_soft_min = _float_cfg(cfg, "source_quality_embedding_soft_min_similarity", 0.50)
+    drop_page_types = _bool_cfg(cfg, "source_quality_drop_low_value_pages", True)
+    drop_document_wrappers = _bool_cfg(cfg, "source_quality_drop_document_wrappers", True)
     cluster_lookup = {str(cluster["cluster_id"]): cluster for cluster in clusters}
     cluster_decisions = policy.get("cluster_decisions") if isinstance(policy.get("cluster_decisions"), dict) else {}
     domain_rules = _list_dicts(policy.get("domain_rules"))
@@ -433,9 +532,31 @@ def apply_source_quality_policy(
         if decision not in {"keep", "drop", "borderline"}:
             decision = "borderline"
             reasons.append("unknown_policy_decision")
+        page_type_flags = [str(flag) for flag in profile.get("page_type_flags") or []]
+        hard_page_flags = hard_drop_page_type_flags(
+            page_type_flags,
+            drop_document_wrappers=drop_document_wrappers,
+        )
+        if drop_page_types and hard_page_flags:
+            decision = "drop"
+            reasons.extend(f"page_type:{flag}" for flag in hard_page_flags)
         if decision in {"keep", "borderline"} and row_score < min_score * 0.35 and float(profile.get("boilerplate_score") or 0.0) > 0.60:
             decision = "drop"
             reasons.append("row_low_score_high_boilerplate")
+        if decision in {"keep", "borderline"} and row_score < min_score:
+            decision = "drop"
+            reasons.append("row_quality_below_minimum")
+        embedding_similarity = _safe_float(profile.get("source_query_embedding_similarity"))
+        if embedding_similarity is not None:
+            if decision in {"keep", "borderline"} and embedding_similarity < alignment_hard_min:
+                decision = "drop"
+                reasons.append("source_query_embedding_alignment_below_hard_min")
+            elif decision == "keep" and embedding_similarity < alignment_soft_min:
+                decision = "borderline"
+                reasons.append("source_query_embedding_alignment_borderline")
+                if not keep_borderline:
+                    decision = "drop"
+                    reasons.append("borderline_not_kept")
         keep = decision in {"keep", "borderline"}
         annotated = dict(row)
         annotated.update(
@@ -445,6 +566,8 @@ def apply_source_quality_policy(
                 "source_quality_score": round(row_score, 4),
                 "source_quality_cluster_id": cluster_id,
                 "source_quality_reasons": reasons,
+                "source_page_type_flags": page_type_flags,
+                "source_query_embedding_similarity": round(embedding_similarity, 4) if embedding_similarity is not None else None,
             }
         )
         if keep:
@@ -458,6 +581,8 @@ def apply_source_quality_policy(
                 "decision": decision,
                 "keep": keep,
                 "quality_score": round(row_score, 4),
+                "page_type_flags": page_type_flags,
+                "source_query_embedding_similarity": round(embedding_similarity, 4) if embedding_similarity is not None else None,
                 "reasons": reasons,
                 "cluster_summary": {
                     "row_count": cluster_lookup.get(cluster_id, {}).get("row_count"),
@@ -466,6 +591,44 @@ def apply_source_quality_policy(
             }
         )
     return kept, decisions
+
+
+def _filter_previous_accepted_rows(
+    rows: list[dict[str, Any]],
+    cfg: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not rows:
+        return [], []
+    min_score = _float_cfg(cfg, "source_quality_min_quality_score", 0.20)
+    alignment_hard_min = _float_cfg(cfg, "source_quality_embedding_hard_min_similarity", 0.35)
+    drop_page_types = _bool_cfg(cfg, "source_quality_drop_low_value_pages", True)
+    drop_document_wrappers = _bool_cfg(cfg, "source_quality_drop_document_wrappers", True)
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for row in rows:
+        current = dict(row)
+        reasons: list[str] = []
+        if current.get("source_quality_keep") is False:
+            reasons.append("previous_source_quality_keep_false")
+        flags = _strings(current.get("source_page_type_flags")) or detect_page_type_flags(
+            current.get("source_url") or current.get("url"),
+            current.get("text") or current.get("source_text") or current.get("source_excerpt") or "",
+        )
+        hard_flags = hard_drop_page_type_flags(flags, drop_document_wrappers=drop_document_wrappers)
+        if drop_page_types and hard_flags:
+            reasons.extend(f"page_type:{flag}" for flag in hard_flags)
+        score = _safe_float(current.get("source_quality_score"))
+        if score is not None and score < min_score:
+            reasons.append("row_quality_below_minimum")
+        alignment = _safe_float(current.get("source_query_embedding_similarity"))
+        if alignment is not None and alignment < alignment_hard_min:
+            reasons.append("source_query_embedding_alignment_below_hard_min")
+        if reasons:
+            removed.append({**current, "source_quality_revalidation_reasons": sorted(set(reasons))})
+            continue
+        current["source_page_type_flags"] = flags
+        kept.append(current)
+    return kept, removed
 
 
 def build_source_quality_report(
@@ -479,6 +642,7 @@ def build_source_quality_report(
     oracle_payload: Mapping[str, Any],
     current_filtered_rows: list[dict[str, Any]] | None = None,
     previous_accepted_rows: list[dict[str, Any]] | None = None,
+    previous_removed_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     kept_profiles = [_profile_from_accepted_row(row, idx) for idx, row in enumerate(filtered_rows)]
     domain_counts = Counter(str(profile.get("domain") or "unknown") for profile in kept_profiles)
@@ -494,12 +658,28 @@ def build_source_quality_report(
     current_kept = len(current_filtered_rows or [])
     kept = len(filtered_rows)
     avg_quality = _avg(float(row.get("quality_score") or 0.0) for row in kept_profiles)
+    alignment_values = [
+        float(row["source_query_embedding_similarity"])
+        for row in profile_rows
+        if row.get("source_query_embedding_similarity") is not None
+    ]
+    embedding_errors = sorted(
+        {
+            str(row.get("source_query_embedding_error"))
+            for row in profile_rows
+            if row.get("source_query_embedding_error")
+        }
+    )
+    page_type_counts: Counter[str] = Counter()
+    for row in profile_rows:
+        page_type_counts.update(str(flag) for flag in row.get("page_type_flags") or [])
     summary = {
         "schema_version": "source_quality.report.v1",
         "num_input_rows": len(rows),
         "num_kept_rows": kept,
         "num_current_kept_rows": current_kept,
         "num_previous_accepted_rows": len(previous_accepted_rows or []),
+        "num_previous_accepted_rows_removed": len(previous_removed_rows or []),
         "num_removed_rows": max(0, len(rows) - current_kept),
         "removal_rate": ((len(rows) - current_kept) / len(rows)) if rows else 0.0,
         "num_clusters": len(clusters),
@@ -509,6 +689,15 @@ def build_source_quality_report(
         "avg_kept_quality_score": avg_quality,
         "decision_counts": dict(decision_counts),
         "removed_reason_counts": dict(removed_reason_counts),
+        "page_type_flag_counts": dict(page_type_counts.most_common()),
+        "embedding_alignment_enabled": any(
+            row.get("source_query_embedding_similarity") is not None
+            or row.get("source_query_embedding_error")
+            for row in profile_rows
+        ),
+        "embedding_alignment_num_scored": len(alignment_values),
+        "embedding_alignment_avg_score": _avg(alignment_values),
+        "embedding_alignment_error": embedding_errors[0] if embedding_errors else None,
         "oracle_enabled": bool(policy.get("oracle", {}).get("enabled")),
         "oracle_used": bool(policy.get("oracle", {}).get("used")),
         "oracle_warning": policy.get("oracle", {}).get("warning"),
@@ -620,9 +809,12 @@ def _summarize_cluster(
     taxonomy = [float(row.get("taxonomy_similarity") or 0.0) for row in rows]
     query_sim = [float(row.get("query_similarity") or 0.0) for row in rows]
     top_terms: Counter[str] = Counter()
+    page_type_flags: Counter[str] = Counter()
     for row in rows:
         top_terms.update(_strings(row.get("top_terms")))
+        page_type_flags.update(str(flag) for flag in row.get("page_type_flags") or [])
     low_value_count = sum(1 for row in rows if row.get("low_value_path"))
+    hard_page_type_count = sum(1 for row in rows if hard_drop_page_type_flags(_strings(row.get("page_type_flags"))))
     exemplars = _cluster_exemplars(rows, exemplars_per_cluster)
     duplicate_count = sum(count - 1 for count in exact_hashes.values() if count > 1)
     return {
@@ -638,8 +830,18 @@ def _summarize_cluster(
         "avg_boilerplate_score": round(_avg(boilerplate), 4),
         "avg_taxonomy_similarity": round(_avg(taxonomy), 4),
         "avg_query_similarity": round(_avg(query_sim), 4),
+        "avg_embedding_alignment": round(
+            _avg(
+                float(row["source_query_embedding_similarity"])
+                for row in rows
+                if row.get("source_query_embedding_similarity") is not None
+            ),
+            4,
+        ),
         "duplicate_rate": round(duplicate_count / len(rows), 4) if rows else 0.0,
         "low_value_path_share": round(low_value_count / len(rows), 4) if rows else 0.0,
+        "page_type_flag_counts": dict(page_type_flags.most_common(10)),
+        "hard_page_type_share": round(hard_page_type_count / len(rows), 4) if rows else 0.0,
         "top_terms": [term for term, _ in top_terms.most_common(18)],
         "exemplars": exemplars,
     }
@@ -778,6 +980,10 @@ def _text_hash(text: str) -> str:
 
 def _excerpt(text: str) -> str:
     return " ".join(text.split())[:MAX_EXCERPT_CHARS]
+
+
+def _excerpt_chars(text: str, limit: int) -> str:
+    return " ".join(str(text or "").split())[: max(1, int(limit))]
 
 
 def _score_bucket(score: float) -> str:

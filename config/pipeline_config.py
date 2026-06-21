@@ -100,6 +100,14 @@ class PipelineConfig(BaseModel):
     source_quality_max_clusters: int = 40
     source_quality_oracle_max_clusters: int = 30
     source_quality_exemplars_per_cluster: int = 3
+    source_quality_drop_low_value_pages: bool = True
+    source_quality_drop_document_wrappers: bool = True
+    source_quality_enable_embeddings: bool = False
+    source_quality_embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    source_quality_embedding_max_rows: int = 512
+    source_quality_embedding_text_chars: int = 1500
+    source_quality_embedding_hard_min_similarity: float = 0.35
+    source_quality_embedding_soft_min_similarity: float = 0.50
 
     # ── SFT annotation ───────────────────────────────────────────────────────
     # Primary modality switch for examples that flow into dataset/train.
@@ -109,6 +117,15 @@ class PipelineConfig(BaseModel):
     sft_target_language: str
     sft_prompt_preset: str = "default"
     sft_reuse_annotations: bool = True
+    sft_answerability_enable: bool = False
+    sft_answerability_embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    sft_answerability_min_answer_source_similarity: float = 0.35
+    sft_answerability_min_question_source_similarity: float = 0.20
+    sft_answerability_borderline_answer_source_similarity: float = 0.45
+    sft_answerability_max_examples: int = 0
+    sft_answerability_drop_low_value_pages: bool = True
+    sft_answerability_drop_document_wrappers: bool = True
+    sft_answerability_max_reported_rows: int = 100
     image_sft_tasks: List[str] = Field(default_factory=lambda: ["caption"])
     source_eval_enable: bool = False
     source_eval_blocking: bool = False
@@ -231,11 +248,28 @@ class PipelineConfig(BaseModel):
             "source_quality_max_clusters": os.getenv("SOURCE_QUALITY_MAX_CLUSTERS"),
             "source_quality_oracle_max_clusters": os.getenv("SOURCE_QUALITY_ORACLE_MAX_CLUSTERS"),
             "source_quality_exemplars_per_cluster": os.getenv("SOURCE_QUALITY_EXEMPLARS_PER_CLUSTER"),
+            "source_quality_drop_low_value_pages": os.getenv("SOURCE_QUALITY_DROP_LOW_VALUE_PAGES"),
+            "source_quality_drop_document_wrappers": os.getenv("SOURCE_QUALITY_DROP_DOCUMENT_WRAPPERS"),
+            "source_quality_enable_embeddings": os.getenv("SOURCE_QUALITY_ENABLE_EMBEDDINGS"),
+            "source_quality_embedding_model": os.getenv("SOURCE_QUALITY_EMBEDDING_MODEL"),
+            "source_quality_embedding_max_rows": os.getenv("SOURCE_QUALITY_EMBEDDING_MAX_ROWS"),
+            "source_quality_embedding_text_chars": os.getenv("SOURCE_QUALITY_EMBEDDING_TEXT_CHARS"),
+            "source_quality_embedding_hard_min_similarity": os.getenv("SOURCE_QUALITY_EMBEDDING_HARD_MIN_SIMILARITY"),
+            "source_quality_embedding_soft_min_similarity": os.getenv("SOURCE_QUALITY_EMBEDDING_SOFT_MIN_SIMILARITY"),
             "training_modality": os.getenv("TRAINING_MODALITY"),
             "sft_mode": os.getenv("SFT_MODE"),
             "sft_target_language": os.getenv("SFT_TARGET_LANGUAGE"),
             "sft_prompt_preset": os.getenv("SFT_PROMPT_PRESET"),
             "sft_reuse_annotations": os.getenv("SFT_REUSE_ANNOTATIONS"),
+            "sft_answerability_enable": os.getenv("SFT_ANSWERABILITY_ENABLE"),
+            "sft_answerability_embedding_model": os.getenv("SFT_ANSWERABILITY_EMBEDDING_MODEL"),
+            "sft_answerability_min_answer_source_similarity": os.getenv("SFT_ANSWERABILITY_MIN_ANSWER_SOURCE_SIMILARITY"),
+            "sft_answerability_min_question_source_similarity": os.getenv("SFT_ANSWERABILITY_MIN_QUESTION_SOURCE_SIMILARITY"),
+            "sft_answerability_borderline_answer_source_similarity": os.getenv("SFT_ANSWERABILITY_BORDERLINE_ANSWER_SOURCE_SIMILARITY"),
+            "sft_answerability_max_examples": os.getenv("SFT_ANSWERABILITY_MAX_EXAMPLES"),
+            "sft_answerability_drop_low_value_pages": os.getenv("SFT_ANSWERABILITY_DROP_LOW_VALUE_PAGES"),
+            "sft_answerability_drop_document_wrappers": os.getenv("SFT_ANSWERABILITY_DROP_DOCUMENT_WRAPPERS"),
+            "sft_answerability_max_reported_rows": os.getenv("SFT_ANSWERABILITY_MAX_REPORTED_ROWS"),
             "image_sft_tasks": os.getenv("IMAGE_SFT_TASKS"),
             "source_eval_enable": os.getenv("SOURCE_EVAL_ENABLE"),
             "source_eval_blocking": os.getenv("SOURCE_EVAL_BLOCKING"),
@@ -349,6 +383,25 @@ class PipelineConfig(BaseModel):
             raise ValueError("source_quality_oracle_max_clusters must be >= 1.")
         if int(self.source_quality_exemplars_per_cluster) < 1:
             raise ValueError("source_quality_exemplars_per_cluster must be >= 1.")
+        if int(self.source_quality_embedding_max_rows) < 0:
+            raise ValueError("source_quality_embedding_max_rows must be >= 0.")
+        if int(self.source_quality_embedding_text_chars) < 1:
+            raise ValueError("source_quality_embedding_text_chars must be >= 1.")
+        if not 0.0 <= float(self.source_quality_embedding_hard_min_similarity) <= 1.0:
+            raise ValueError("source_quality_embedding_hard_min_similarity must be between 0.0 and 1.0.")
+        if not 0.0 <= float(self.source_quality_embedding_soft_min_similarity) <= 1.0:
+            raise ValueError("source_quality_embedding_soft_min_similarity must be between 0.0 and 1.0.")
+        if int(self.sft_answerability_max_examples) < 0:
+            raise ValueError("sft_answerability_max_examples must be >= 0.")
+        if int(self.sft_answerability_max_reported_rows) < 0:
+            raise ValueError("sft_answerability_max_reported_rows must be >= 0.")
+        for key, value in {
+            "sft_answerability_min_answer_source_similarity": self.sft_answerability_min_answer_source_similarity,
+            "sft_answerability_min_question_source_similarity": self.sft_answerability_min_question_source_similarity,
+            "sft_answerability_borderline_answer_source_similarity": self.sft_answerability_borderline_answer_source_similarity,
+        }.items():
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"{key} must be between 0.0 and 1.0.")
         if not 0.0 <= float(self.source_eval_ratio) <= 0.5:
             raise ValueError("source_eval_ratio must be between 0.0 and 0.5.")
         if int(self.source_eval_max_items) < 0:

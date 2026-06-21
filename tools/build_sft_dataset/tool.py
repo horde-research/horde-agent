@@ -11,6 +11,7 @@ import logging
 import os
 from typing import Any, Dict, Iterable, List
 
+from core.data.sft_answerability import filter_text_sft_examples_by_answerability
 from core.llm import LLMClient
 from core.data.image_sft_tasks import normalize_image_sft_tasks
 from core.redaction import redact_secrets
@@ -139,6 +140,36 @@ class BuildSftDatasetTool(BaseTool):
 
         # Step 3: Build SFT examples
         examples = self._build_examples(mode, annotations, items_map, image_tasks=image_tasks)
+        answerability_summary = {"enabled": False}
+        answerability_path = str(config.get("answerability_report_path") or "").strip()
+        if mode == "text" and _bool(config.get("answerability_enable", False)):
+            examples, answerability_summary = filter_text_sft_examples_by_answerability(
+                examples,
+                out_path=answerability_path or None,
+                embedding_model=str(config.get("answerability_embedding_model") or "Qwen/Qwen3-Embedding-0.6B"),
+                min_answer_source_similarity=_float(
+                    config.get("answerability_min_answer_source_similarity"),
+                    0.35,
+                ),
+                min_question_source_similarity=_float(
+                    config.get("answerability_min_question_source_similarity"),
+                    0.20,
+                ),
+                borderline_answer_source_similarity=_float(
+                    config.get("answerability_borderline_answer_source_similarity"),
+                    0.45,
+                ),
+                max_examples=_int(config.get("answerability_max_examples"), 0),
+                drop_low_value_pages=_bool(config.get("answerability_drop_low_value_pages", True)),
+                drop_document_wrappers=_bool(config.get("answerability_drop_document_wrappers", True)),
+                max_reported_rows=_int(config.get("answerability_max_reported_rows"), 100),
+                embedding_fn=config.get("answerability_embedding_fn"),
+            )
+            logger.info(
+                "SFT answerability: kept %d/%d examples.",
+                answerability_summary.get("num_kept_examples", len(examples)),
+                answerability_summary.get("num_examples", len(examples)),
+            )
         logger.info("Built %d SFT examples.", len(examples))
 
         # Step 4: Save outputs
@@ -160,6 +191,8 @@ class BuildSftDatasetTool(BaseTool):
             "image_tasks": image_tasks if mode == "image" else None,
             "annotation_reuse": reuse_summary,
             "annotation_cache_path": reuse_summary.get("cache_path"),
+            "answerability": answerability_summary,
+            "answerability_report_path": answerability_path or None,
         }
 
     def _load_items(self, mode: str, config: Dict[str, Any]) -> list:
@@ -386,3 +419,25 @@ def _write_annotation_cache(path: str, rows: Iterable[Dict[str, Any]]) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         for row in ordered:
             handle.write(json.dumps(redact_secrets(row), ensure_ascii=False) + "\n")
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

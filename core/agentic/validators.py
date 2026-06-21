@@ -290,6 +290,7 @@ def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
     failure_rate = num_failures / num_items if num_items else 0.0
     mode = str(output.get("mode") or output.get("sft_mode") or "text").strip().lower()
     sft_path = output.get("sft_path")
+    answerability = output.get("answerability") if isinstance(output.get("answerability"), dict) else {}
     row_quality = _validate_sft_jsonl(sft_path, mode=mode) if _path_exists(sft_path) else {
         "row_count": 0,
         "invalid_row_count": 0,
@@ -337,6 +338,10 @@ def validate_sft_output(output: Dict[str, Any]) -> QualityReport:
             "sft_row_count": row_quality["row_count"],
             "sft_invalid_row_count": row_quality["invalid_row_count"],
             "sft_issue_counts": row_quality["issue_counts"],
+            "sft_answerability_enabled": answerability.get("enabled"),
+            "sft_answerability_drop_rate": answerability.get("drop_rate"),
+            "sft_answerability_num_dropped": answerability.get("num_dropped_examples"),
+            "sft_answerability_error": answerability.get("embedding_error"),
         },
         recommended_actions=recommended_actions,
         suggested_adjustments=suggested_adjustments,
